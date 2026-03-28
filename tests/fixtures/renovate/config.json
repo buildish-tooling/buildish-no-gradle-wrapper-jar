@@ -1,0 +1,5 @@
+{
+  "enabledManagers": [
+    "gradle-wrapper"
+  ]
+}
