@@ -48,6 +48,9 @@ script, patch existing `gradlew` / `gradlew.bat`, remove any pre-existing
 `gradle/wrapper/gradle-wrapper.jar`, and add the retained wrapper metadata patterns to
 `.gitignore`.
 
+The installer scripts for POSIX environments and Windows are idempotent, so safe to run multiple times.
+Re-running the installer scripts updates the helper files to the latest version.
+
 ### POSIX / bash
 
 Run from the target project root:
