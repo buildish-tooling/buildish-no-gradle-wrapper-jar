@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "wrapperVersions": [
+    {
+      "version": "8.14.5",
+      "rawTag": "v8.14.5",
+      "rawJarUrl": "https://raw.githubusercontent.com/gradle/gradle/v8.14.5/gradle/wrapper/gradle-wrapper.jar",
+      "wrapperJarSha256": "7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172",
+      "publishedChecksumUrl": "https://services.gradle.org/distributions/gradle-8.14.5-wrapper.jar.sha256",
+      "launchers": {
+        "posix": {
+          "path": "tests/fixtures/launchers/8.14.5/gradlew",
+          "sha256": "b187b4c52e749f5760afdd6fadc31b2a98ad35fb249bf0dff03b72650f320409"
+        },
+        "windows": {
+          "path": "tests/fixtures/launchers/8.14.5/gradlew.bat",
+          "sha256": "1d297e00bd21de3ace22b4d7f2de1f9dfa858883d66bbf7c1ccbecccec8f4f3b"
+        }
+      }
+    },
+    {
+      "version": "9.6.1",
+      "rawTag": "v9.6.1",
+      "rawJarUrl": "https://raw.githubusercontent.com/gradle/gradle/v9.6.1/gradle/wrapper/gradle-wrapper.jar",
+      "wrapperJarSha256": "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7",
+      "publishedChecksumUrl": "https://services.gradle.org/distributions/gradle-9.6.1-wrapper.jar.sha256",
+      "launchers": {
+        "posix": {
+          "path": "tests/fixtures/launchers/9.6.1/gradlew",
+          "sha256": "a5a5c199ba02189ae8c46a334223371a20599d9c298ef65e7540ede4a3f72d59"
+        },
+        "windows": {
+          "path": "tests/fixtures/launchers/9.6.1/gradlew.bat",
+          "sha256": "d539676c48b596afda64c963ec8f7ee56c7b3fe7e3b81d1dbe2d1a1e3dd9e9f8"
+        }
+      }
+    }
+  ],
+  "targetDistributions": [
+    {
+      "version": "8.14.5",
+      "url": "https://services.gradle.org/distributions/gradle-8.14.5-bin.zip",
+      "sha256": "6f74b601422d6d6fc4e1f9a1ab6522f642c2fdcbc15ae33ebd30ba3d7198e854"
+    },
+    {
+      "version": "9.6.1",
+      "url": "https://services.gradle.org/distributions/gradle-9.6.1-bin.zip",
+      "sha256": "9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14"
+    }
+  ],
+  "transitions": [
+    {
+      "bootstrapVersion": "8.14.5",
+      "targetVersion": "8.14.5"
+    },
+    {
+      "bootstrapVersion": "8.14.5",
+      "targetVersion": "9.6.1"
+    },
+    {
+      "bootstrapVersion": "9.6.1",
+      "targetVersion": "8.14.5"
+    },
+    {
+      "bootstrapVersion": "9.6.1",
+      "targetVersion": "9.6.1"
+    }
+  ],
+  "installedGradleCases": [
+    {
+      "installedVersion": "8.14.5",
+      "targetVersion": "9.6.1"
+    },
+    {
+      "installedVersion": "9.6.1",
+      "targetVersion": "8.14.5"
+    },
+    {
+      "installedVersion": "9.6.1",
+      "targetVersion": "9.6.1"
+    }
+  ],
+  "nativeWindows": {
+    "launcherVersions": [
+      "8.14.5",
+      "9.6.1"
+    ],
+    "stableCopyExitCodes": [
+      0,
+      37,
+      83
+    ]
+  },
+  "renovate": {
+    "version": "44.7.0",
+    "manager": "gradle-wrapper",
+    "fromVersion": "8.14.5",
+    "toVersion": "9.6.1",
+    "binarySource": "global",
+    "allowedUnsafeExecutions": [
+      "gradleWrapper"
+    ]
+  }
+}
