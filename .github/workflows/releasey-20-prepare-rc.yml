@@ -1,0 +1,319 @@
+# Copyright 2026 The Buildish Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Releasey Prepare RC
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact version such as 1.2.3
+        required: true
+        type: string
+      source_sha:
+        description: Optional exact source commit
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: buildish-release-${{ github.repository }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  BUILDISH_RELEASE_TOOLING_REF: main # renovate: datasource=github-releases depName=buildish-tooling/buildish-release-tooling currentValue=v0.0.0
+  BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH: .buildish-internal/buildish-release-tooling
+
+jobs:
+  verify-source-ref-checks:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buildish-tooling/buildish-release-tooling
+          ref: ${{ env.BUILDISH_RELEASE_TOOLING_REF }}
+          path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Install Python 3.13 for uv-managed commands
+        run: uv python install 3.13
+      - name: Fetch remote heads and tags
+        run: |
+          git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Verify GitHub checks on the resolved source ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          args=("$RELEASE_VERSION")
+          if [[ -n "$INPUT_SOURCE_SHA" ]]; then
+            args+=("$INPUT_SOURCE_SHA")
+          fi
+          bash buildish-release-tooling/release-tooling.sh verify-source-ref-checks \
+            "${args[@]}"
+
+  resolve-state:
+    needs: verify-source-ref-checks
+    runs-on: ubuntu-latest
+    outputs:
+      rc_tag: ${{ steps.prepare-rc.outputs.rc_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buildish-tooling/buildish-release-tooling
+          ref: ${{ env.BUILDISH_RELEASE_TOOLING_REF }}
+          path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Install Python 3.13 for uv-managed commands
+        run: uv python install 3.13
+      - name: Fetch remote heads and tags
+        run: |
+          git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - id: prepare-rc
+        name: Resolve release state and emit summary
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/prepare-rc.json
+          RELEASE_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          args=("$RELEASE_VERSION")
+          if [[ -n "$INPUT_SOURCE_SHA" ]]; then
+            args+=("$INPUT_SOURCE_SHA")
+          fi
+          bash buildish-release-tooling/release-tooling.sh prepare-rc \
+            "${args[@]}"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path(os.environ["MANIFEST_PATH"]).read_text(encoding="utf-8"))
+          print(f"rc_tag={manifest['rc_tag']}")
+          PY
+
+  prepare-rc-destination:
+    needs: resolve-state
+    runs-on: ubuntu-latest
+    environment: draft-release-secrets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buildish-tooling/buildish-release-tooling
+          ref: ${{ env.BUILDISH_RELEASE_TOOLING_REF }}
+          path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Install Python 3.13 for uv-managed commands
+        run: uv python install 3.13
+      - name: Prepare the release-candidate destination
+        run: |
+          echo "TBD: configure and prepare the Buildish release-candidate destination."
+
+  build-source-rc:
+    needs:
+      - resolve-state
+      - prepare-rc-destination
+    runs-on: ubuntu-latest
+    environment: draft-release-secrets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buildish-tooling/buildish-release-tooling
+          ref: ${{ env.BUILDISH_RELEASE_TOOLING_REF }}
+          path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Install Python 3.13 for uv-managed commands
+        run: uv python install 3.13
+      - name: Fetch remote heads and tags
+        run: |
+          git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Draft optional component tests
+        run: |
+          echo "TODO: if PREPARE_RC_RUNS_TESTS=true, run the component test suite here. Otherwise rely on the verified release-branch CI gate."
+      - name: Build, sign, and stage source RC
+        env:
+          BUILDISH_GPG_PRIVATE_KEY: ${{ secrets.BUILDISH_RELEASE_GPG_SECRET_SUBKEY }}
+          BUILDISH_GPG_PASSPHRASE: ${{ secrets.BUILDISH_RELEASE_GPG_PASSPHRASE }}
+          RC_TAG: ${{ needs.resolve-state.outputs.rc_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          args=(--rc-tag "$RC_TAG" "$RELEASE_VERSION")
+          if [[ -n "$INPUT_SOURCE_SHA" ]]; then
+            args+=("$INPUT_SOURCE_SHA")
+          fi
+          bash buildish-release-tooling/release-tooling.sh build-source-rc \
+            "${args[@]}"
+
+  create-rc-tag:
+    needs:
+      - resolve-state
+      - build-source-rc
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buildish-tooling/buildish-release-tooling
+          ref: ${{ env.BUILDISH_RELEASE_TOOLING_REF }}
+          path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Install Python 3.13 for uv-managed commands
+        run: uv python install 3.13
+      - name: Fetch remote heads and tags
+        run: |
+          git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Create the RC tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ needs.resolve-state.outputs.rc_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          args=(--rc-tag "$RC_TAG" "$RELEASE_VERSION")
+          if [[ -n "$INPUT_SOURCE_SHA" ]]; then
+            args+=("$INPUT_SOURCE_SHA")
+          fi
+          bash buildish-release-tooling/release-tooling.sh create-rc-materialization-tag \
+            "${args[@]}"
+
+  sync-draft-github-release:
+    needs:
+      - resolve-state
+      - create-rc-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buildish-tooling/buildish-release-tooling
+          ref: ${{ env.BUILDISH_RELEASE_TOOLING_REF }}
+          path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Install Python 3.13 for uv-managed commands
+        run: uv python install 3.13
+      - name: Fetch remote heads and tags
+        run: |
+          git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Create or recreate the draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ needs.resolve-state.outputs.rc_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          args=(--rc-tag "$RC_TAG" "$RELEASE_VERSION")
+          if [[ -n "$INPUT_SOURCE_SHA" ]]; then
+            args+=("$INPUT_SOURCE_SHA")
+          fi
+          bash buildish-release-tooling/release-tooling.sh sync-draft-github-release \
+            "${args[@]}"
+
+  finalize-rc-vote-materials:
+    needs:
+      - resolve-state
+      - sync-draft-github-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment: draft-release-secrets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buildish-tooling/buildish-release-tooling
+          ref: ${{ env.BUILDISH_RELEASE_TOOLING_REF }}
+          path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          prune-cache: true
+      - name: Install Python 3.13 for uv-managed commands
+        run: uv python install 3.13
+      - name: Fetch remote heads and tags
+        run: |
+          git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Stage and mirror the authoritative RC vote manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILDISH_GPG_PRIVATE_KEY: ${{ secrets.BUILDISH_RELEASE_GPG_SECRET_SUBKEY }}
+          BUILDISH_GPG_PASSPHRASE: ${{ secrets.BUILDISH_RELEASE_GPG_PASSPHRASE }}
+          RC_TAG: ${{ needs.resolve-state.outputs.rc_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          args=(--rc-tag "$RC_TAG" "$RELEASE_VERSION")
+          if [[ -n "$INPUT_SOURCE_SHA" ]]; then
+            args+=("$INPUT_SOURCE_SHA")
+          fi
+          bash buildish-release-tooling/release-tooling.sh finalize-rc-vote-materials \
+            "${args[@]}"
