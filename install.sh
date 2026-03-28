@@ -16,7 +16,8 @@
 
 set -eu
 
-# POSIX installer for this helper tool.
+# POSIX installer for the Apache Buildish no-gradle-wrapper-jar helper tool.
+# https://buildish.apache.org/projects/no-gradle-wrapper-jar/
 #
 # The installer assumes it is being run against an existing Gradle project that
 # already has `gradlew`, `gradlew.bat`, and `gradle/wrapper/gradle-wrapper.properties`.

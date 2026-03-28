@@ -19,6 +19,9 @@ import org.gradle.api.GradleException
 import org.gradle.api.tasks.wrapper.Wrapper
 
 /*
+ * Apache Buildiish no-gradle-wrapper-jar helper init script.
+ * https://buildish.apache.org/projects/no-gradle-wrapper-jar/
+ *
  * This init script is added to Gradle invocations by the shell/PowerShell helpers.
  * Its only job is to keep the helper installed after `./gradlew wrapper ...`
  * regenerates `gradlew` and `gradlew.bat`.
