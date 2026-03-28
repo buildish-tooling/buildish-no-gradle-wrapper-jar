@@ -1,6 +1,6 @@
 ---
 title: "Buildish no-gradle-wrapper-jar blueprint"
-description: Temporary home for the blueprint documentation moved from the project README.
+description: Run `gradlew` / `gradlew.bat` without `gradle-wrapper.jar` in the source tree.
 ---
 
 <!--
