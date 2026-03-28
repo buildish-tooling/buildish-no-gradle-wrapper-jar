@@ -1,5 +1,5 @@
 ---
-title: "[FROM README] Buildish no-gradle-wrapper-jar blueprint"
+title: "Buildish no-gradle-wrapper-jar blueprint"
 description: Temporary home for the blueprint documentation moved from the project README.
 ---
 
@@ -19,27 +19,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-This page currently carries content moved from the project README. It will likely be reorganized later.
-
 This directory contains a copyable blueprint for projects that want local `gradlew` / `gradlew.bat`
 usage without checking `gradle/wrapper/gradle-wrapper.jar` into the source tree.
-
-Projects copy these files into their own `gradle/` directory as:
-
-- `gradle/buildish-no-gradle-wrapper-jar.sh`
-- `gradle/buildish-no-gradle-wrapper-jar.ps1`
-- `gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts`
-
-Then they add one small invocation to their generated `gradlew` / `gradlew.bat`, following the
-same include-style approach used by `gradle-wrapper-no-jar`.
-
-## Files in this blueprint
-
-- `buildish-no-gradle-wrapper-jar.sh` — POSIX helper for `gradlew`
-- `buildish-no-gradle-wrapper-jar.ps1` — PowerShell helper for Windows / `gradlew.bat`
-- `buildish-no-gradle-wrapper-jar.init.gradle.kts` — Gradle init script that re-patches freshly generated launcher files after `:wrapper`
-
-The helpers are standalone on purpose. They do not import this repository's TypeScript runtime.
 
 ## Automatic installation scripts
 
@@ -90,6 +71,21 @@ For trusted local development and integration testing, set
 `tools/buildish-no-gradle-wrapper-jar/` directory to copy helper files from disk instead of
 downloading them from GitHub.
 
+## Files in this blueprint
+
+- `buildish-no-gradle-wrapper-jar.sh` — POSIX helper for `gradlew`
+- `buildish-no-gradle-wrapper-jar.ps1` — PowerShell helper for Windows / `gradlew.bat`
+- `buildish-no-gradle-wrapper-jar.init.gradle.kts` — Gradle init script that re-patches freshly generated launcher files after `:wrapper`
+
+The helpers are standalone on purpose. They do not import this repository's TypeScript runtime.
+
+## Script code vs. binary executable
+
+The scripts in this repository are written in POSIX shell and Windows PowerShell not just for maximum
+portability, but to explicitly enable inspection and verification.
+They do not require any external dependencies beyond a POSIX shell and `gpg` on
+POSIX, or PowerShell and `gpg.exe` on Windows.
+
 ## What the helpers do
 
 The helpers read `gradle/wrapper/gradle-wrapper.properties`, derive the configured Gradle version,
@@ -135,7 +131,10 @@ the Buildish helper invocation.
 - `Invoke-WebRequest`
 - `Get-FileHash`
 
-## How projects adopt the helper
+## Manual installation
+
+Projects copy three files into their own `gradle/` directory and add one small invocation to their
+generated `gradlew` / `gradlew.bat`.
 
 ### 1. Copy the helper files into the target project
 
@@ -203,7 +202,8 @@ signature from the upstream Gradle endpoints.
 
 ## Customization boundaries
 
-The scripts intentionally assume the same Gradle hosts as the action:
+The scripts intentionally assume the same Gradle hosts as the
+[Apache Buildish Mammoth Cache for Gradle](https://buildish.apache.org/projects/mammoth-cache-gradle/):
 
 - `services.gradle.org` for checksum and detached signature metadata
 - `raw.githubusercontent.com/gradle/gradle/...` for the wrapper JAR bytes
