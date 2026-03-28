@@ -1,0 +1,177 @@
+#
+# Copyright 2026 The Buildish Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - release/**
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify required toolchain
+        run: |
+          command -v bash
+          command -v node
+          command -v npm
+          command -v python3
+          command -v pwsh
+
+      - name: Run complete non-Windows validation
+        run: make check
+
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify native-Windows toolchain
+        shell: powershell
+        run: |
+          Get-Command cmd.exe | Out-Null
+          Get-Command java.exe | Out-Null
+          Get-Command powershell.exe | Out-Null
+          Get-Command python.exe | Out-Null
+
+      - name: Run native-Windows validation
+        shell: powershell
+        run: |
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+            -File tests\windows-integration.ps1 -Suite All
+
+  codeql:
+    name: CodeQL
+    # Temporarily disabled because GitHub Advanced Security is unavailable.
+    if: false
+    # if: github.repository_owner == 'buildish-tooling'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        with:
+          languages: kotlin
+          build-mode: none
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          advanced-security: false
+
+  required_checks:
+    name: Required Checks
+    if: ${{ always() }}
+    needs:
+      - check
+      - windows-check
+      - codeql
+      - zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert required jobs succeeded and CodeQL was acceptable
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+          WINDOWS_CHECK_RESULT: ${{ needs.windows-check.result }}
+          CODEQL_RESULT: ${{ needs.codeql.result }}
+          ZIZMOR_RESULT: ${{ needs.zizmor.result }}
+        run: |
+          if [ "$CHECK_RESULT" != success ]; then
+            echo "Linux check did not succeed: $CHECK_RESULT"
+            exit 1
+          fi
+          if [ "$WINDOWS_CHECK_RESULT" != success ]; then
+            echo "Windows check did not succeed: $WINDOWS_CHECK_RESULT"
+            exit 1
+          fi
+          if [ "$ZIZMOR_RESULT" != success ]; then
+            echo "zizmor did not succeed: $ZIZMOR_RESULT"
+            exit 1
+          fi
+
+          case "$CODEQL_RESULT" in
+            success|skipped) ;;
+            *)
+              echo "CodeQL had an unexpected result: $CODEQL_RESULT"
+              exit 1
+              ;;
+          esac
+
+          echo "All required jobs succeeded for this event."
+
+  publish-site:
+    name: Publish aggregate site
+    needs: required_checks
+    # Temporarily disabled while the Buildish repositories remain private.
+    if: false
+    #if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: buildish-tooling/buildish/.github/workflows/site-publish.yml@main
