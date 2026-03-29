@@ -16,7 +16,7 @@
 schemaVersion: 1
 project:
   slug: no-gradle-wrapper-jar
-  displayName: no-gradle-wrapper-jar
+  displayName: No Gradle Wrapper JAR
   repository: https://github.com/apache/buildish-no-gradle-wrapper-jar
   defaultBranch: main
 content:
