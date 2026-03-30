@@ -110,6 +110,15 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command '$1' is not available on PATH."
 }
 
+require_base_commands() {
+  source_sdkman_gradle
+  require_command gradle
+  require_command gpg
+  require_command python3
+  command -v sha256sum >/dev/null 2>&1 || require_command shasum
+  mkdir -p "$BUILD_DIR"
+}
+
 sanitize_for_path() {
   printf '%s' "$1" | tr '/:' '__' | tr -c 'A-Za-z0-9._-' '_'
 }
@@ -316,20 +325,8 @@ exercise_helper_recovery_scenario() {
   printf 'corrupted-wrapper-jar\n' > "$jar_path"
   rm -f "$sha_path" "$asc_path"
 
-  case "$helper_kind" in
-    posix)
-      run_posix_helper_direct "$project_dir"
-      assert_last_command_succeeded 'POSIX helper did not recover from a corrupted wrapper JAR plus missing metadata.'
-      ;;
-    powershell)
-      run_powershell_helper_direct "$project_dir"
-      assert_last_command_succeeded 'PowerShell helper did not recover from a corrupted wrapper JAR plus missing metadata.'
-      ;;
-    *)
-      fail "unknown helper kind '$helper_kind'"
-      ;;
-  esac
-
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_succeeded "$helper_kind helper did not recover from a corrupted wrapper JAR plus missing metadata."
   assert_metadata_for_version "$project_dir" "$version"
 }
 
@@ -341,19 +338,8 @@ exercise_helper_invalid_distribution_failure() {
   log "exercising $helper_kind helper invalid-distribution failure in '$project_dir'"
   set_wrapper_property "$properties_path" distributionUrl 'https\://example.invalid/distributions/gradle-9.4.1-bin.zip'
 
-  case "$helper_kind" in
-    posix)
-      run_posix_helper_direct "$project_dir"
-      assert_last_command_failed 'POSIX helper unexpectedly accepted a non-canonical distributionUrl.'
-      ;;
-    powershell)
-      run_powershell_helper_direct "$project_dir"
-      assert_last_command_failed 'PowerShell helper unexpectedly accepted a non-canonical distributionUrl.'
-      ;;
-    *)
-      fail "unknown helper kind '$helper_kind'"
-      ;;
-  esac
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_failed "$helper_kind helper unexpectedly accepted a non-canonical distributionUrl."
 
   assert_last_output_contains 'distributionUrl must be a canonical' "$helper_kind helper failure output did not mention the canonical distributionUrl requirement."
   assert_last_output_contains 'services.gradle.org URL' "$helper_kind helper failure output did not mention the required services.gradle.org host."
@@ -367,19 +353,8 @@ exercise_installer_missing_properties_failure() {
   gradle_init_fixture "$project_dir"
   rm -f "$project_dir/gradle/wrapper/gradle-wrapper.properties"
 
-  case "$installer_kind" in
-    posix)
-      run_posix_installer_capture "$project_dir"
-      assert_last_command_failed 'POSIX installer unexpectedly succeeded without gradle-wrapper.properties.'
-      ;;
-    powershell)
-      run_powershell_installer_capture "$project_dir"
-      assert_last_command_failed 'PowerShell installer unexpectedly succeeded without gradle-wrapper.properties.'
-      ;;
-    *)
-      fail "unknown installer kind '$installer_kind'"
-      ;;
-  esac
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_failed "$installer_kind installer unexpectedly succeeded without gradle-wrapper.properties."
 
   assert_last_output_contains 'Gradle wrapper properties file' "$installer_kind installer failure output did not mention the missing gradle-wrapper.properties file."
   assert_last_output_contains 'was not found' "$installer_kind installer failure output did not mention that gradle-wrapper.properties was missing."
@@ -419,12 +394,6 @@ exercise_wrapper_update_to_version() {
   assert_metadata_for_version "$project_dir" "$updated_version"
 }
 
-run_posix_installer_flow() {
-  project_dir=$1
-  log "running default POSIX installer flow in '$project_dir'"
-  exercise_wrapper_update_to_version "$project_dir" '' "$UPDATED_GRADLE_VERSION"
-}
-
 run_powershell_installer_flow() {
   project_dir=$1
   log "running default PowerShell installer flow in '$project_dir'"
@@ -447,18 +416,13 @@ run_powershell_installer_flow() {
 }
 
 run_default_integration_suite() {
-  source_sdkman_gradle
-  require_command gradle
-  require_command gpg
-  require_command python3
+  require_base_commands
   require_command pwsh
-  command -v sha256sum >/dev/null 2>&1 || require_command shasum
-  mkdir -p "$BUILD_DIR"
   test_root=$(mktemp -d "$BUILD_DIR/integration.XXXXXX")
   trap 'rm -rf "$test_root"' EXIT HUP INT TERM
 
   log "starting default integration suite (test_root='$test_root')"
-  run_posix_installer_flow "$test_root/posix-installer"
+  exercise_wrapper_update_to_version "$test_root/posix-installer" '' "$UPDATED_GRADLE_VERSION"
   run_powershell_installer_flow "$test_root/powershell-installer"
   exercise_helper_recovery_scenario "$test_root/posix-installer" "$(extract_gradle_version "$test_root/posix-installer")" posix
   exercise_helper_invalid_distribution_failure "$test_root/posix-installer" posix
@@ -470,12 +434,7 @@ run_default_integration_suite() {
 run_single_version_exercise() {
   bootstrap_gradle_version=$1
   target_version=$2
-  source_sdkman_gradle
-  require_command gradle
-  require_command gpg
-  require_command python3
-  command -v sha256sum >/dev/null 2>&1 || require_command shasum
-  mkdir -p "$BUILD_DIR"
+  require_base_commands
   test_root=$(mktemp -d "$BUILD_DIR/version-single.XXXXXX")
   trap 'rm -rf "$test_root"' EXIT HUP INT TERM
 
@@ -522,13 +481,8 @@ main() {
       run_default_integration_suite
       ;;
     single-version)
-      if [ "$#" -eq 2 ]; then
-        run_single_version_exercise "$2" "$2"
-      elif [ "$#" -eq 3 ]; then
-        run_single_version_exercise "$2" "$3"
-      else
-        fail 'single-version requires one target version or a bootstrap-version/target-version pair.'
-      fi
+      [ "$#" -ge 2 ] && [ "$#" -le 3 ] || fail 'single-version requires one target version or a bootstrap-version/target-version pair.'
+      run_single_version_exercise "$2" "${3:-$2}"
       ;;
     version-list)
       shift
