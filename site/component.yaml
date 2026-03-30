@@ -20,7 +20,7 @@ component:
   repository: https://github.com/apache/buildish-no-gradle-wrapper-jar
   defaultBranch: main
 content:
-  docsRoot: site/docs
+  docsRoot: docs
 versioning:
   unreleasedLabel: Unreleased
 navigation:
