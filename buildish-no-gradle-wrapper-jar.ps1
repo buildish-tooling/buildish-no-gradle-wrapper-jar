@@ -16,7 +16,7 @@
 
 <#
 Apache Buildish no-gradle-wrapper-jar helper for Windows `gradlew.bat`
-https://buildish.apache.org/projects/no-gradle-wrapper-jar/
+https://buildish.apache.org/components/no-gradle-wrapper-jar/
 
 This helper is invoked from `gradlew.bat` after `%APP_HOME%` has been resolved.
 

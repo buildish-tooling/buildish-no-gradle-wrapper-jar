@@ -21,7 +21,7 @@ This repository contains the copyable helper blueprint for projects that want lo
 
 Project documentation now lives on the Apache Buildish site:
 
-- <https://buildish.apache.org/projects/no-gradle-wrapper-jar/>
+- <https://buildish.apache.org/components/no-gradle-wrapper-jar/>
 
 Use the site page for installation, helper behavior, adoption steps, development verification, and
 current validation scope.

@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # Apache Buildish no-gradle-wrapper-jar helper for POSIX `gradlew`
-# https://buildish.apache.org/projects/no-gradle-wrapper-jar/
+# https://buildish.apache.org/components/no-gradle-wrapper-jar/
 #
 # This file is sourced from the generated `gradlew` launcher after `APP_HOME` has
 # been resolved by the launcher itself.

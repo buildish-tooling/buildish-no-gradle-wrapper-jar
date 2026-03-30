@@ -203,7 +203,7 @@ signature from the upstream Gradle endpoints.
 ## Customization boundaries
 
 The scripts intentionally assume the same Gradle hosts as the
-[Apache Buildish Mammoth Cache for Gradle](https://buildish.apache.org/projects/mammoth-cache-gradle/):
+[Apache Buildish Mammoth Cache for Gradle](https://buildish.apache.org/components/mammoth-cache-gradle/):
 
 - `services.gradle.org` for checksum and detached signature metadata
 - `raw.githubusercontent.com/gradle/gradle/...` for the wrapper JAR bytes
