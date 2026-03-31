@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# No Gradle Wrapper JAR
+# No Gradle® Wrapper JAR
 
 No Gradle Wrapper JAR provides the copyable helper blueprint for projects that want local Gradle wrapper usage without checking `gradle/wrapper/gradle-wrapper.jar` into source control.
 
