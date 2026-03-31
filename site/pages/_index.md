@@ -19,3 +19,5 @@ limitations under the License.
 No Gradle Wrapper JAR provides the copyable helper blueprint for projects that want local Gradle wrapper usage without checking `gradle/wrapper/gradle-wrapper.jar` into source control.
 
 Use the unreleased docs for installation, helper behavior, adoption steps, development verification, and current validation scope.
+
+{{< buildish-component-link kind="docs" label="Open Docs" appearance="primary" >}}
