@@ -771,7 +771,8 @@ exercise_helper_missing_properties_failure() {
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_failed "$helper_kind helper unexpectedly succeeded without gradle-wrapper.properties."
   assert_last_output_contains 'Gradle wrapper properties file' "$helper_kind helper failure output did not mention the missing gradle-wrapper.properties file."
-  assert_last_output_contains_collapsed_whitespace 'was not found' "$helper_kind helper failure output did not mention that gradle-wrapper.properties was missing."
+  assert_last_output_contains 'was not' "$helper_kind helper failure output did not mention that gradle-wrapper.properties was missing."
+  assert_last_output_contains 'gradle-wrapper.properties' "$helper_kind helper failure output did not mention the missing gradle-wrapper.properties path."
 }
 
 exercise_helper_missing_distribution_url_failure() {

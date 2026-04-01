@@ -432,12 +432,23 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
   $tempDirectory = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-$([System.Guid]::NewGuid())"
   $gpgHome = Join-Path -Path $tempDirectory -ChildPath 'home'
   $trustedKeyPath = Join-Path -Path $tempDirectory -ChildPath 'gradle-trusted-key.asc'
+  $localSignaturePath = Join-Path -Path $tempDirectory -ChildPath 'payload.asc'
+  $localPayloadPath = Join-Path -Path $tempDirectory -ChildPath 'payload.jar'
+  $locationPushed = $false
 
   try {
     New-Item -ItemType Directory -Path $gpgHome -Force | Out-Null
     Write-BuildishNoGradleWrapperJarAsciiFile -Path $trustedKeyPath -Content $TrustedGradlePublicKey
+    Copy-Item -LiteralPath $SignaturePath -Destination $localSignaturePath -Force
+    Copy-Item -LiteralPath $PayloadPath -Destination $localPayloadPath -Force
 
-    $fingerprintOutput = Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome $gpgHome -Arguments @('--show-keys', '--with-colons', '--fingerprint', $trustedKeyPath) -FailurePrefix 'Unable to inspect pinned Gradle signing key'
+    # Some Windows environments resolve `gpg` through a Git/MSYS shim that does
+    # not reliably accept native absolute Windows paths for `--homedir` or input
+    # files. Run GPG inside the temp directory and use only relative paths.
+    Push-Location -LiteralPath $tempDirectory
+    $locationPushed = $true
+
+    $fingerprintOutput = Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'home' -Arguments @('--show-keys', '--with-colons', '--fingerprint', 'gradle-trusted-key.asc') -FailurePrefix 'Unable to inspect pinned Gradle signing key'
 
     $fingerprintLine = ($fingerprintOutput -split "`r?`n" | Where-Object { $_.StartsWith('fpr:') } | Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($fingerprintLine)) {
@@ -449,9 +460,12 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
       throw 'Pinned Gradle signing key fingerprint mismatch.'
     }
 
-    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome $gpgHome -Arguments @('--import', $trustedKeyPath) -FailurePrefix 'Unable to import pinned Gradle signing key')
-    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome $gpgHome -Arguments @('--no-auto-key-retrieve', '--verify', $SignaturePath, $PayloadPath) -FailurePrefix 'Detached signature verification failed')
+    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'home' -Arguments @('--import', 'gradle-trusted-key.asc') -FailurePrefix 'Unable to import pinned Gradle signing key')
+    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'home' -Arguments @('--no-auto-key-retrieve', '--verify', 'payload.asc', 'payload.jar') -FailurePrefix 'Detached signature verification failed')
   } finally {
+    if ($locationPushed) {
+      Pop-Location
+    }
     Remove-Item -LiteralPath $tempDirectory -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
