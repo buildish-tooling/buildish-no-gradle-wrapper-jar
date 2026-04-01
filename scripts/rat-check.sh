@@ -22,7 +22,6 @@ RAT_ARCHIVE_URL="https://dlcdn.apache.org/creadur/apache-rat-${RAT_VERSION}/${RA
 RAT_ARCHIVE_SHA512='315b16536526838237c42b5e6b613d29adc77e25a6e44a866b2b7f8b162e03d3629d49c9faea86ceb864a36b2c42838b8ce43d6f2db544e961f2259e242748f4'
 TOOL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 REPO_ROOT=$(git -C "$TOOL_DIR" rev-parse --show-toplevel)
-TOOL_PREFIX=$(git -C "$TOOL_DIR" rev-parse --show-prefix)
 BUILD_DIR=$TOOL_DIR/build/rat
 ARCHIVE_PATH=$BUILD_DIR/$RAT_ARCHIVE_NAME
 
@@ -83,10 +82,4 @@ tar -xzf "$ARCHIVE_PATH" -C "$work_dir"
 rat_jar="$work_dir/apache-rat-${RAT_VERSION}/apache-rat-${RAT_VERSION}.jar"
 input_source="$work_dir/input-source.txt"
 
-git -C "$REPO_ROOT" ls-files --cached --others --exclude-standard -- "$TOOL_PREFIX" | while IFS= read -r path; do
-  [ -n "$path" ] || continue
-  [ -L "$REPO_ROOT/$path" ] && continue
-  printf '%s\n' "$REPO_ROOT/$path"
-done > "$input_source"
-
-java -jar "$rat_jar" --input-source "$input_source" --
+java -jar "$rat_jar" -- "$REPO_ROOT"

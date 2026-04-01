@@ -412,11 +412,21 @@ function Invoke-BuildishNoGradleWrapperJarGpg {
     [string]$FailurePrefix
   )
 
-  $output = (& $GpgCommand --homedir $GpgHome --batch --no-options @Arguments 2>&1 | Out-String)
-  if ($LASTEXITCODE -ne 0) {
-    throw "${FailurePrefix}: $output"
+  $stdoutPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-stdout-$([System.Guid]::NewGuid()).txt"
+  $stderrPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-stderr-$([System.Guid]::NewGuid()).txt"
+
+  try {
+    $process = Start-Process -FilePath $GpgCommand -ArgumentList (@('--homedir', $GpgHome, '--batch', '--no-options') + $Arguments) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $stdout = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
+    $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
+    $output = ($stdout, $stderr | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join ''
+    if ($process.ExitCode -ne 0) {
+      throw "${FailurePrefix}: $output"
+    }
+    return $output
+  } finally {
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
   }
-  return $output
 }
 
 # Perform detached-signature verification in a fresh temporary GPG home. This
