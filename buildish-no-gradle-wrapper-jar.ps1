@@ -41,6 +41,14 @@ Import-Module $PSHOME\Modules\Microsoft.PowerShell.Utility -Function Get-FileHas
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+function Import-BuildishNoGradleWrapperJarHttpClientTypes {
+  if ($null -ne ('System.Net.Http.HttpClient' -as [type])) {
+    return
+  }
+
+  Add-Type -AssemblyName 'System.Net.Http'
+}
+
 # This fingerprint is the trust root for detached-signature verification. We pin
 # the exact Gradle signing key and verify the fingerprint before importing it into
 # the temporary GPG home used for each validation run.
@@ -301,6 +309,7 @@ function Save-BuildishNoGradleWrapperJarDownloadedFile {
   $responseStream = $null
   $fileStream = $null
   try {
+    Import-BuildishNoGradleWrapperJarHttpClientTypes
     $handler = [System.Net.Http.HttpClientHandler]::new()
     $client = [System.Net.Http.HttpClient]::new($handler)
     $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
