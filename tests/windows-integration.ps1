@@ -129,6 +129,7 @@ $wrapperJarPath = Join-Path -Path $wrapperDirectory -ChildPath 'gradle-wrapper.j
 
 try {
   New-Item -ItemType Directory -Path $BuildDirectory -Force | Out-Null
+  New-Item -ItemType Directory -Path $projectDirectory -Force | Out-Null
   Write-BuildishWindowsTestLog "starting Windows launcher integration suite (test_root='$testRoot')"
 
   Invoke-BuildishWithGradleUserHome -ProjectDirectory $projectDirectory -Label 'gradle init' -Command {
