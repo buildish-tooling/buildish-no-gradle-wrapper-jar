@@ -19,7 +19,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.tasks.wrapper.Wrapper
 
 /*
- * Apache Buildiish no-gradle-wrapper-jar helper init script.
+ * Apache Buildish no-gradle-wrapper-jar helper init script.
  * https://buildish.apache.org/components/no-gradle-wrapper-jar/
  *
  * This init script is added to Gradle invocations by the shell/PowerShell helpers.
@@ -48,6 +48,7 @@ val currentUnixAnchor =
 val oldUnixAnchor =
   """APP_HOME=$( cd "${'$'}{APP_HOME:-./}" && pwd -P ) || exit"""
 val unixInsertion = ". \"${'$'}{APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh\""
+val unixAnchors = listOf(currentUnixAnchor, oldUnixAnchor)
 val batchAnchor = "for %%i in (\"%APP_HOME%\") do set APP_HOME=%%~fi"
 val batchHelperBlock =
   """
@@ -69,17 +70,31 @@ val currentBatchExecuteLine =
   "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %*"
 val patchedCurrentBatchExecuteLine =
   "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*"
+val batchExecuteLineReplacements =
+  listOf(
+    oldBatchExecuteLine to patchedOldBatchExecuteLine,
+    legacyBatchExecuteLine to patchedLegacyBatchExecuteLine,
+    currentBatchExecuteLine to patchedCurrentBatchExecuteLine,
+  )
 
 // Preserve the target file's original newline style so Gradle keeps emitting the
 // script format expected on each platform.
+fun newlineFor(content: String): String = if (content.contains("\r\n")) "\r\n" else "\n"
+
 fun normalizeForFile(text: String, newline: String): String = text.lines().joinToString(newline)
+
+fun hasConfiguredProperty(line: String, key: String): Boolean {
+  val normalizedLine = line.removeSuffix("\r")
+  if (!normalizedLine.startsWith("$key=")) return false
+  return normalizedLine.substringAfter('=', "").isNotBlank()
+}
 
 // Insert one block immediately after any supported anchor line unless it is
 // already present. The operation is intentionally idempotent because the helper
 // may run the wrapper task multiple times in the same project.
 fun patchAfterAnyAnchor(target: File, anchors: List<String>, insertion: String, label: String) {
   val content = target.readText()
-  val newline = if (content.contains("\r\n")) "\r\n" else "\n"
+  val newline = newlineFor(content)
   val normalizedInsertion = normalizeForFile(insertion, newline)
   if (content.contains(normalizedInsertion)) return
   for (anchor in anchors) {
@@ -102,7 +117,7 @@ fun patchAfterAnyAnchor(target: File, anchors: List<String>, insertion: String, 
 // Gradle minor lines without guessing which batch format was generated.
 fun replaceAnyExactLine(target: File, replacements: List<Pair<String, String>>, label: String) {
   val content = target.readText()
-  val newline = if (content.contains("\r\n")) "\r\n" else "\n"
+  val newline = newlineFor(content)
   for ((_, replacement) in replacements) {
     val normalizedReplacement = normalizeForFile(replacement, newline)
     if (content.contains(normalizedReplacement)) return
@@ -132,12 +147,7 @@ fun warnIfDistributionSha256SumMissing(wrapperTask: Wrapper) {
   val propertiesFile = wrapperTask.jarFile.parentFile.resolve("gradle-wrapper.properties")
   if (!propertiesFile.isFile) return
   val hasDistributionSha256Sum =
-    propertiesFile.useLines { lines ->
-      lines.any { line ->
-        val normalizedLine = line.removeSuffix("\r")
-        normalizedLine.matches(Regex("^distributionSha256Sum=\\S.*$"))
-      }
-    }
+    propertiesFile.useLines { lines -> lines.any { line -> hasConfiguredProperty(line, "distributionSha256Sum") } }
   if (hasDistributionSha256Sum) return
   wrapperTask.logger.warn(
     """
@@ -165,17 +175,9 @@ gradle.projectsLoaded {
       notCompatibleWithConfigurationCache("Patches generated launcher scripts after the Wrapper task writes them.")
       doLast {
         warnIfDistributionSha256SumMissing(wrapperTask)
-        patchAfterAnyAnchor(scriptFile, listOf(currentUnixAnchor, oldUnixAnchor), unixInsertion, "gradlew")
+        patchAfterAnyAnchor(scriptFile, unixAnchors, unixInsertion, "gradlew")
         patchAfterAnyAnchor(batchScript, listOf(batchAnchor), batchHelperBlock, "gradlew.bat")
-        replaceAnyExactLine(
-          batchScript,
-          listOf(
-            oldBatchExecuteLine to patchedOldBatchExecuteLine,
-            legacyBatchExecuteLine to patchedLegacyBatchExecuteLine,
-            currentBatchExecuteLine to patchedCurrentBatchExecuteLine,
-          ),
-          "gradlew.bat",
-        )
+        replaceAnyExactLine(batchScript, batchExecuteLineReplacements, "gradlew.bat")
       }
     }
   }

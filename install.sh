@@ -39,6 +39,7 @@ BUILDISH_BASE_URL=${BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL:-$BUILDISH_DEFAULT_B
 BUILDISH_SOURCE_DIR=${BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR:-}
 BUILDISH_CR=$(printf '\r')
 TARGET_DIR=${1:-.}
+BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES=262144
 
 # Consistent installer failure prefix.
 buildish_install_fail() {
@@ -67,6 +68,26 @@ buildish_install_make_temp() {
   mktemp "$1/.buildish-no-gradle-wrapper-jar-install.XXXXXX"
 }
 
+buildish_install_file_size() {
+  wc -c < "$1" | tr -d '[:space:]'
+}
+
+buildish_install_file_within_max_size() {
+  actual_size=$(buildish_install_file_size "$1")
+  [ "$actual_size" -le "$2" ]
+}
+
+buildish_install_move_temp_file() {
+  temp_path=$1
+  target_path=$2
+  failure_message=$3
+
+  if ! mv -f "$temp_path" "$target_path"; then
+    rm -f "$temp_path"
+    buildish_install_fail "$failure_message"
+  fi
+}
+
 # Download one helper file into place via a temp file. The content is not executed
 # until after the move succeeds.
 buildish_install_download_to() {
@@ -76,16 +97,26 @@ buildish_install_download_to() {
 
   buildish_install_assert_not_symlink "$target_path" "$label"
   temp_path=$(buildish_install_make_temp "$GRADLE_DIR") || buildish_install_fail "Unable to create a temporary file for $label."
+  curl_stderr_path="${temp_path}.stderr"
 
-  if ! curl --fail --location --silent --show-error --output "$temp_path" "$url"; then
-    rm -f "$temp_path"
+  if ! curl --fail --location --silent --show-error --max-filesize "$BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES" --output "$temp_path" "$url" 2>"$curl_stderr_path"; then
+    curl_output=$(cat "$curl_stderr_path" 2>/dev/null || true)
+    rm -f "$temp_path" "$curl_stderr_path"
+    if printf '%s' "$curl_output" | grep -Fq 'Maximum file size exceeded'; then
+      [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
+      buildish_install_fail "$label exceeded the maximum allowed size of ${BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES} bytes."
+    fi
+    [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
     buildish_install_fail "Unable to download $label from '$url'."
   fi
 
-  if ! mv -f "$temp_path" "$target_path"; then
+  rm -f "$curl_stderr_path"
+  if ! buildish_install_file_within_max_size "$temp_path" "$BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES"; then
     rm -f "$temp_path"
-    buildish_install_fail "Unable to move $label into '$target_path'."
+    buildish_install_fail "$label exceeded the maximum allowed size of ${BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES} bytes."
   fi
+
+  buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to move $label into '$target_path'."
 }
 
 # Local-copy variant used by integration tests and trusted development workflows.
@@ -105,10 +136,7 @@ buildish_install_copy_to() {
     buildish_install_fail "Unable to copy $label from '$source_path'."
   fi
 
-  if ! mv -f "$temp_path" "$target_path"; then
-    rm -f "$temp_path"
-    buildish_install_fail "Unable to move $label into '$target_path'."
-  fi
+  buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to move $label into '$target_path'."
 }
 
 # Resolve whether a tool file should come from a trusted local checkout or from
@@ -127,7 +155,7 @@ buildish_install_stage_tool_file() {
 
 # Re-emit a possibly multi-line block using a caller-selected newline style so the
 # patched launchers preserve their original LF / CRLF convention.
-buildish_install_write_block() {
+buildish_install_write_text_with_newlines() {
   text=$1
   newline_kind=$2
 
@@ -142,9 +170,9 @@ buildish_install_write_block() {
 # Insert a block after any one of several exact anchor lines, preserving newline
 # style and execute bits, and treating the operation as idempotent if the
 # inserted first line is already present.
-buildish_install_patch_after_any_line() {
+buildish_install_insert_after_any_line() {
   target_path=$1
-  inserted_line=$2
+  insertion_block=$2
   label=$3
   shift 3
 
@@ -155,8 +183,8 @@ buildish_install_patch_after_any_line() {
 
   buildish_install_assert_not_symlink "$target_path" "$label"
 
-  inserted_first_line=$(printf '%s' "$inserted_line" | sed -n '1p')
-  if grep -Fqx "$inserted_first_line" "$target_path"; then
+  insertion_first_line=$(printf '%s' "$insertion_block" | sed -n '1p')
+  if grep -Fqx "$insertion_first_line" "$target_path"; then
     return 0
   fi
 
@@ -178,8 +206,8 @@ buildish_install_patch_after_any_line() {
         if [ "$normalized_line" = "$anchor_line" ]; then
           found_anchor=1
           case $current_line in
-            *"$BUILDISH_CR") buildish_install_write_block "$inserted_line" crlf >> "$temp_path" ;;
-            *) buildish_install_write_block "$inserted_line" lf >> "$temp_path" ;;
+            *"$BUILDISH_CR") buildish_install_write_text_with_newlines "$insertion_block" crlf >> "$temp_path" ;;
+            *) buildish_install_write_text_with_newlines "$insertion_block" lf >> "$temp_path" ;;
           esac
           break
         fi
@@ -196,16 +224,13 @@ buildish_install_patch_after_any_line() {
     chmod +x "$temp_path"
   fi
 
-  if ! mv -f "$temp_path" "$target_path"; then
-    rm -f "$temp_path"
-    buildish_install_fail "Unable to replace patched $label at '$target_path'."
-  fi
+  buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to replace patched $label at '$target_path'."
 }
 
 # Replace one exact line when present. Missing lines are tolerated here because
 # newer Gradle versions may generate slightly different launchers; the installer
 # verifies the required patched line afterwards.
-buildish_install_replace_line_if_present() {
+buildish_install_replace_exact_line_if_present() {
   target_path=$1
   old_line=$2
   replacement=$3
@@ -238,8 +263,8 @@ buildish_install_replace_line_if_present() {
     if [ "$normalized_line" = "$old_line" ]; then
       replaced=1
       case $current_line in
-        *"$BUILDISH_CR") buildish_install_write_block "$replacement" crlf >> "$temp_path" ;;
-        *) buildish_install_write_block "$replacement" lf >> "$temp_path" ;;
+        *"$BUILDISH_CR") buildish_install_write_text_with_newlines "$replacement" crlf >> "$temp_path" ;;
+        *) buildish_install_write_text_with_newlines "$replacement" lf >> "$temp_path" ;;
       esac
       continue
     fi
@@ -256,32 +281,11 @@ buildish_install_replace_line_if_present() {
     chmod +x "$temp_path"
   fi
 
-  if ! mv -f "$temp_path" "$target_path"; then
-    rm -f "$temp_path"
-    buildish_install_fail "Unable to replace updated $label at '$target_path'."
-  fi
-}
-
-# CRLF-aware exact-line check used after patching Windows launchers.
-buildish_install_ensure_line_present() {
-  target_path=$1
-  expected_line=$2
-  label=$3
-
-  while IFS= read -r current_line || [ -n "$current_line" ]; do
-    case $current_line in
-      *"$BUILDISH_CR") current_line=${current_line%"$BUILDISH_CR"} ;;
-    esac
-    if [ "$current_line" = "$expected_line" ]; then
-      return 0
-    fi
-  done < "$target_path"
-
-  buildish_install_fail "Unable to apply the expected update to $label at '$target_path'."
+  buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to replace updated $label at '$target_path'."
 }
 
 # Same as above, but accepts any of several supported generated launcher shapes.
-buildish_install_ensure_any_line_present() {
+buildish_install_assert_any_exact_line_present() {
   target_path=$1
   label=$2
   shift 2
@@ -356,10 +360,56 @@ buildish_install_update_gitignore() {
     printf '%s\n' "$entry_asc" >> "$temp_path"
   fi
 
-  if ! mv -f "$temp_path" "$gitignore_path"; then
-    rm -f "$temp_path"
-    buildish_install_fail "Unable to update '$gitignore_path'."
-  fi
+  buildish_install_move_temp_file "$temp_path" "$gitignore_path" "Unable to update '$gitignore_path'."
+}
+
+buildish_install_stage_helper_files() {
+  buildish_install_stage_tool_file \
+    "$HELPER_SH_PATH" \
+    'buildish-no-gradle-wrapper-jar.sh' \
+    'POSIX helper script'
+  buildish_install_stage_tool_file \
+    "$HELPER_PS1_PATH" \
+    'buildish-no-gradle-wrapper-jar.ps1' \
+    'PowerShell helper script'
+  buildish_install_stage_tool_file \
+    "$HELPER_INIT_PATH" \
+    'buildish-no-gradle-wrapper-jar.init.gradle.kts' \
+    'Gradle init script'
+}
+
+buildish_install_update_gradlew_bat() {
+  buildish_install_replace_exact_line_if_present \
+    "$GRADLEW_BAT_PATH" \
+    'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"' \
+    "$GRADLEW_BAT_HELPER_BLOCK" \
+    'gradlew.bat'
+  buildish_install_insert_after_any_line \
+    "$GRADLEW_BAT_PATH" \
+    "$GRADLEW_BAT_HELPER_BLOCK" \
+    'gradlew.bat' \
+    'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi'
+  buildish_install_replace_exact_line_if_present \
+    "$GRADLEW_BAT_PATH" \
+    "$GRADLEW_BAT_OLD_EXECUTE_LINE" \
+    "$GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE" \
+    'gradlew.bat'
+  buildish_install_replace_exact_line_if_present \
+    "$GRADLEW_BAT_PATH" \
+    "$GRADLEW_BAT_LEGACY_EXECUTE_LINE" \
+    "$GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE" \
+    'gradlew.bat'
+  buildish_install_replace_exact_line_if_present \
+    "$GRADLEW_BAT_PATH" \
+    "$GRADLEW_BAT_CURRENT_EXECUTE_LINE" \
+    "$GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE" \
+    'gradlew.bat'
+  buildish_install_assert_any_exact_line_present \
+    "$GRADLEW_BAT_PATH" \
+    'gradlew.bat' \
+    "$GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE" \
+    "$GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE" \
+    "$GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE"
 }
 
 buildish_install_require_command curl
@@ -419,59 +469,18 @@ if ! grep -Eq '^distributionSha256Sum=[^[:space:]].*' "$PROPERTIES_PATH"; then
 fi
 
 # Stage helper files first so launcher patches never point at missing scripts.
-buildish_install_stage_tool_file \
-  "$HELPER_SH_PATH" \
-  'buildish-no-gradle-wrapper-jar.sh' \
-  'POSIX helper script'
-buildish_install_stage_tool_file \
-  "$HELPER_PS1_PATH" \
-  'buildish-no-gradle-wrapper-jar.ps1' \
-  'PowerShell helper script'
-buildish_install_stage_tool_file \
-  "$HELPER_INIT_PATH" \
-  'buildish-no-gradle-wrapper-jar.init.gradle.kts' \
-  'Gradle init script'
+buildish_install_stage_helper_files
 buildish_install_remove_regular_file "$WRAPPER_JAR_PATH" 'gradle-wrapper.jar'
 
 # Patch both launchers and then assert that the final expected batch execute line
 # is present so silent launcher-format drift does not go unnoticed.
-buildish_install_patch_after_any_line \
+buildish_install_insert_after_any_line \
   "$GRADLEW_PATH" \
   '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' \
   'gradlew' \
   'APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '\''%s\n'\'' "$PWD" ) || exit' \
   'APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit'
-buildish_install_replace_line_if_present \
-  "$GRADLEW_BAT_PATH" \
-  'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"' \
-  "$GRADLEW_BAT_HELPER_BLOCK" \
-  'gradlew.bat'
-buildish_install_patch_after_any_line \
-  "$GRADLEW_BAT_PATH" \
-  "$GRADLEW_BAT_HELPER_BLOCK" \
-  'gradlew.bat' \
-  'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi'
-buildish_install_replace_line_if_present \
-  "$GRADLEW_BAT_PATH" \
-  "$GRADLEW_BAT_OLD_EXECUTE_LINE" \
-  "$GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE" \
-  'gradlew.bat'
-buildish_install_replace_line_if_present \
-  "$GRADLEW_BAT_PATH" \
-  "$GRADLEW_BAT_LEGACY_EXECUTE_LINE" \
-  "$GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE" \
-  'gradlew.bat'
-buildish_install_replace_line_if_present \
-  "$GRADLEW_BAT_PATH" \
-  "$GRADLEW_BAT_CURRENT_EXECUTE_LINE" \
-  "$GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE" \
-  'gradlew.bat'
-buildish_install_ensure_any_line_present \
-  "$GRADLEW_BAT_PATH" \
-  'gradlew.bat' \
-  "$GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE" \
-  "$GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE" \
-  "$GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE"
+buildish_install_update_gradlew_bat
 buildish_install_update_gitignore
 
 echo "${BUILDISH_TOOL_NAME} install: Installed helper files into '$GRADLE_DIR' and updated launcher scripts in '$TARGET_DIR_ABSOLUTE'."

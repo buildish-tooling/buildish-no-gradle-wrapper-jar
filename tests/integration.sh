@@ -30,6 +30,9 @@ TOOL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_DIR=$TOOL_DIR/build/tests
 UPDATED_GRADLE_VERSION=${UPDATED_GRADLE_VERSION:-8.14}
 TWO_SEGMENT_GRADLE_VERSION=${TWO_SEGMENT_GRADLE_VERSION:-8.3}
+HELPER_MAX_METADATA_BYTES=65536
+HELPER_MAX_JAR_BYTES=10485760
+INSTALLER_MAX_TOOL_FILE_BYTES=262144
 
 fail() {
   echo "integration-test: $*" >&2
@@ -42,6 +45,10 @@ log() {
 
 CAPTURED_OUTPUT=''
 CAPTURED_STATUS=0
+TEST_HTTP_SERVER_PID=''
+TEST_HTTP_SERVER_PORT=''
+TEST_HTTP_SERVER_LOG=''
+TEST_HTTP_SERVER_PORT_FILE=''
 
 run_and_capture() {
   output_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-test.XXXXXX")
@@ -172,6 +179,77 @@ gradle_user_home() {
 
 gradle_init_script_path() {
   printf '%s/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts' "$1"
+}
+
+write_file_with_size() {
+  file_path=$1
+  size_bytes=$2
+  prefix_text=${3:-}
+  python3 - <<'PY' "$file_path" "$size_bytes" "$prefix_text"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+size_bytes = int(sys.argv[2])
+prefix = sys.argv[3].encode('utf-8')
+if len(prefix) > size_bytes:
+    raise SystemExit(1)
+path.write_bytes(prefix + (b'a' * (size_bytes - len(prefix))))
+PY
+}
+
+stop_static_http_server() {
+  if [ -n "$TEST_HTTP_SERVER_PID" ]; then
+    kill "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1 || true
+    wait "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1 || true
+  fi
+  rm -f "$TEST_HTTP_SERVER_LOG" "$TEST_HTTP_SERVER_PORT_FILE"
+  TEST_HTTP_SERVER_PID=''
+  TEST_HTTP_SERVER_PORT=''
+  TEST_HTTP_SERVER_LOG=''
+  TEST_HTTP_SERVER_PORT_FILE=''
+}
+
+start_static_http_server() {
+  served_dir=$1
+  stop_static_http_server
+  TEST_HTTP_SERVER_PORT_FILE=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-port.XXXXXX")
+  TEST_HTTP_SERVER_LOG=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-log.XXXXXX")
+
+  python3 - <<'PY' "$served_dir" "$TEST_HTTP_SERVER_PORT_FILE" >"$TEST_HTTP_SERVER_LOG" 2>&1 &
+import functools
+import http.server
+import socketserver
+import sys
+
+served_dir = sys.argv[1]
+port_file = sys.argv[2]
+
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=served_dir)
+with ReusableTCPServer(("127.0.0.1", 0), handler) as httpd:
+    with open(port_file, "w", encoding="utf-8") as handle:
+        handle.write(str(httpd.server_address[1]))
+    httpd.serve_forever()
+PY
+  TEST_HTTP_SERVER_PID=$!
+
+  for _ in $(seq 1 100); do
+    if [ -s "$TEST_HTTP_SERVER_PORT_FILE" ]; then
+      TEST_HTTP_SERVER_PORT=$(cat "$TEST_HTTP_SERVER_PORT_FILE")
+      return 0
+    fi
+    if ! kill -0 "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  log_contents=$(cat "$TEST_HTTP_SERVER_LOG" 2>/dev/null || true)
+  stop_static_http_server
+  fail "unable to start the local HTTP test server. log=$log_contents"
 }
 
 copy_project_fixture() {
@@ -332,6 +410,60 @@ path.write_text("\n".join(lines) + "\n")
 PY
 }
 
+configure_helper_download_urls() {
+  project_dir=$1
+  helper_kind=$2
+  base_url=$3
+
+  case "$helper_kind" in
+    posix)
+      python3 - <<'PY' "$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh" "$base_url"
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+base_url = sys.argv[2]
+text = path.read_text()
+replacements = {
+    r'^BUILDISH_HELPER_SHA256_URL=.*$': f"BUILDISH_HELPER_SHA256_URL='{base_url}/wrapper.sha256'",
+    r'^BUILDISH_HELPER_SIGNATURE_URL=.*$': f"BUILDISH_HELPER_SIGNATURE_URL='{base_url}/wrapper.asc'",
+    r'^BUILDISH_HELPER_JAR_URL=.*$': f"BUILDISH_HELPER_JAR_URL='{base_url}/gradle-wrapper.jar'",
+}
+for pattern, replacement in replacements.items():
+    text, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise SystemExit(1)
+path.write_text(text)
+PY
+      ;;
+    powershell)
+      python3 - <<'PY' "$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1" "$base_url"
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+base_url = sys.argv[2]
+text = path.read_text()
+replacements = {
+    r'^\s*\$GradleWrapperSha256Url = .*$': f'  $GradleWrapperSha256Url = "{base_url}/wrapper.sha256"',
+    r'^\s*\$GradleWrapperSignatureUrl = .*$': f'  $GradleWrapperSignatureUrl = "{base_url}/wrapper.asc"',
+    r'^\s*\$GradleWrapperJarUrl = .*$': f'  $GradleWrapperJarUrl = "{base_url}/gradle-wrapper.jar"',
+}
+for pattern, replacement in replacements.items():
+    text, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise SystemExit(1)
+path.write_text(text)
+PY
+      ;;
+    *)
+      fail "unknown helper kind '$helper_kind'"
+      ;;
+  esac
+}
+
 assert_launcher_patches() {
   project_dir=$1
   file_has_exact_line "$project_dir/gradlew" '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' || fail 'gradlew was not patched with the helper include.'
@@ -405,6 +537,20 @@ run_powershell_installer_capture() {
   project_dir=$1
   log "installing PowerShell helper into '$project_dir'"
   run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR="$TOOL_DIR" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
+}
+
+run_posix_installer_capture_with_base_url() {
+  project_dir=$1
+  base_url=$2
+  log "installing POSIX helper into '$project_dir' from '$base_url'"
+  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL="$base_url" sh "$TOOL_DIR/install.sh" "$project_dir"
+}
+
+run_powershell_installer_capture_with_base_url() {
+  project_dir=$1
+  base_url=$2
+  log "installing PowerShell helper into '$project_dir' from '$base_url'"
+  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL="$base_url" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
 }
 
 run_posix_helper_direct() {
@@ -499,6 +645,59 @@ exercise_helper_malformed_metadata_recovery() {
   assert_metadata_for_version "$project_dir" "$version"
 }
 
+exercise_helper_oversized_download_failure() {
+  project_dir=$1
+  version=$2
+  helper_kind=$3
+  download_kind=$4
+  wrapper_dir="$project_dir/gradle/wrapper"
+  jar_path="$wrapper_dir/gradle-wrapper.jar"
+  sha_path="$wrapper_dir/gradle-wrapper-$version.sha256"
+  asc_path="$wrapper_dir/gradle-wrapper-$version.asc"
+  server_root="$project_dir/oversized-download-server"
+
+  rm -rf "$server_root"
+  mkdir -p "$server_root"
+  cp "$sha_path" "$server_root/wrapper.sha256"
+  cp "$asc_path" "$server_root/wrapper.asc"
+  cp "$jar_path" "$server_root/gradle-wrapper.jar"
+
+  case "$download_kind" in
+    sha256)
+      log "exercising $helper_kind helper oversized-checksum download failure in '$project_dir' for Gradle '$version'"
+      rm -f "$sha_path"
+      write_file_with_size "$server_root/wrapper.sha256" $((HELPER_MAX_METADATA_BYTES + 1)) 'a'
+      target_path="$sha_path"
+      ;;
+    asc)
+      log "exercising $helper_kind helper oversized-signature download failure in '$project_dir' for Gradle '$version'"
+      rm -f "$asc_path"
+      write_file_with_size "$server_root/wrapper.asc" $((HELPER_MAX_METADATA_BYTES + 1)) '-----BEGIN PGP SIGNATURE-----
+'
+      target_path="$asc_path"
+      ;;
+    jar)
+      log "exercising $helper_kind helper oversized-wrapper-jar download failure in '$project_dir' for Gradle '$version'"
+      rm -f "$jar_path"
+      write_file_with_size "$server_root/gradle-wrapper.jar" $((HELPER_MAX_JAR_BYTES + 1)) ''
+      target_path="$jar_path"
+      ;;
+    *)
+      fail "unknown oversized download kind '$download_kind'"
+      ;;
+  esac
+
+  start_static_http_server "$server_root"
+  configure_helper_download_urls "$project_dir" "$helper_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  stop_static_http_server
+
+  assert_last_command_failed "$helper_kind helper unexpectedly accepted an oversized $download_kind download."
+  assert_last_output_contains 'maximum allowed size' "$helper_kind helper failure output did not mention the maximum allowed size for the oversized $download_kind download."
+  [ ! -e "$target_path" ] || fail "$helper_kind helper should not publish an oversized $download_kind file into '$target_path'."
+}
+
 exercise_helper_invalid_distribution_failure() {
   project_dir=$1
   helper_kind=$2
@@ -527,6 +726,31 @@ exercise_installer_missing_properties_failure() {
 
   assert_last_output_contains 'Gradle wrapper properties file' "$installer_kind installer failure output did not mention the missing gradle-wrapper.properties file."
   assert_last_output_contains 'was not found' "$installer_kind installer failure output did not mention that gradle-wrapper.properties was missing."
+}
+
+exercise_installer_oversized_tool_download_failure() {
+  project_dir=$1
+  installer_kind=$2
+  server_root="$project_dir/installer-download-server"
+  oversized_file_name='buildish-no-gradle-wrapper-jar.sh'
+  target_path="$project_dir/gradle/$oversized_file_name"
+
+  log "exercising $installer_kind installer oversized bootstrap download failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  rm -rf "$server_root"
+  mkdir -p "$server_root"
+  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.sh" "$server_root/buildish-no-gradle-wrapper-jar.sh"
+  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.ps1" "$server_root/buildish-no-gradle-wrapper-jar.ps1"
+  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" "$server_root/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+  write_file_with_size "$server_root/$oversized_file_name" $((INSTALLER_MAX_TOOL_FILE_BYTES + 1)) ''
+
+  start_static_http_server "$server_root"
+  "run_${installer_kind}_installer_capture_with_base_url" "$project_dir" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+  stop_static_http_server
+
+  assert_last_command_failed "$installer_kind installer unexpectedly accepted an oversized bootstrap helper download."
+  assert_last_output_contains 'maximum allowed size' "$installer_kind installer failure output did not mention the maximum allowed size for the oversized bootstrap download."
+  [ ! -e "$target_path" ] || fail "$installer_kind installer should not publish an oversized helper file into '$target_path'."
 }
 
 exercise_helper_missing_properties_failure() {
@@ -860,6 +1084,15 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-malformed-asc"
   exercise_helper_malformed_metadata_recovery "$scenario_root/posix-malformed-asc" "$posix_version" posix asc
 
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-oversized-sha256-download"
+  exercise_helper_oversized_download_failure "$scenario_root/posix-oversized-sha256-download" "$posix_version" posix sha256
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-oversized-asc-download"
+  exercise_helper_oversized_download_failure "$scenario_root/posix-oversized-asc-download" "$posix_version" posix asc
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-oversized-wrapper-jar-download"
+  exercise_helper_oversized_download_failure "$scenario_root/posix-oversized-wrapper-jar-download" "$posix_version" posix jar
+
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-properties"
   exercise_helper_missing_properties_failure "$scenario_root/posix-missing-properties" posix
 
@@ -887,6 +1120,15 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-malformed-asc"
   exercise_helper_malformed_metadata_recovery "$scenario_root/powershell-malformed-asc" "$powershell_version" powershell asc
 
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-oversized-sha256-download"
+  exercise_helper_oversized_download_failure "$scenario_root/powershell-oversized-sha256-download" "$powershell_version" powershell sha256
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-oversized-asc-download"
+  exercise_helper_oversized_download_failure "$scenario_root/powershell-oversized-asc-download" "$powershell_version" powershell asc
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-oversized-wrapper-jar-download"
+  exercise_helper_oversized_download_failure "$scenario_root/powershell-oversized-wrapper-jar-download" "$powershell_version" powershell jar
+
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-properties"
   exercise_helper_missing_properties_failure "$scenario_root/powershell-missing-properties" powershell
 
@@ -904,13 +1146,15 @@ run_default_integration_suite() {
   require_base_commands
   require_command pwsh
   test_root=$(mktemp -d "$BUILD_DIR/integration.XXXXXX")
-  trap 'rm -rf "$test_root"' EXIT HUP INT TERM
+  trap 'stop_static_http_server; rm -rf "$test_root"' EXIT HUP INT TERM
 
   log "starting default integration suite (test_root='$test_root')"
   exercise_wrapper_update_to_version "$test_root/posix-installer" '' "$UPDATED_GRADLE_VERSION"
   run_powershell_installer_flow "$test_root/powershell-installer"
   run_helper_edge_case_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
   run_init_script_focused_suite "$test_root"
+  exercise_installer_oversized_tool_download_failure "$test_root/posix-installer-oversized-bootstrap" posix
+  exercise_installer_oversized_tool_download_failure "$test_root/powershell-installer-oversized-bootstrap" powershell
   exercise_installer_missing_properties_failure "$test_root/posix-installer-missing-properties" posix
   exercise_installer_missing_properties_failure "$test_root/powershell-installer-missing-properties" powershell
   log 'all helper-tool integration checks passed.'

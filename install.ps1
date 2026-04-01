@@ -40,11 +40,21 @@ $DefaultBaseUrl = 'https://raw.githubusercontent.com/apache/buildish/main/tools/
 $BaseUrl = if ([string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL)) { $DefaultBaseUrl } else { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL }
 $SourceDirectory = $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR
 $TargetDirectory = if ($args.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($args[0])) { $args[0] } elseif (-not [string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR)) { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR } else { (Get-Location).Path }
+$BuildishInstallMaxToolFileBytes = 256KB
 
 # Use UTF-8 without a BOM when rewriting launcher and text files so the output
 # remains stable and acceptable to Gradle / shell tooling.
 function Get-BuildishUtf8NoBomEncoding {
   return [System.Text.UTF8Encoding]::new($false)
+}
+
+function Set-BuildishUtf8NoBomFileText {
+  param(
+    [string]$Path,
+    [string]$Content
+  )
+
+  [System.IO.File]::WriteAllText($Path, $Content, (Get-BuildishUtf8NoBomEncoding))
 }
 
 # PowerShell on Windows reports symlinks and junctions as reparse points. The
@@ -91,13 +101,64 @@ function Save-BuildishDownloadedFile {
 
   Assert-BuildishNotSymlink -Path $Path -Label $Label
   $tempPath = New-BuildishInstallTempPath -Directory $GradleDirectory
+  $handler = $null
+  $client = $null
+  $request = $null
+  $response = $null
+  $responseStream = $null
+  $fileStream = $null
 
   try {
-    Invoke-WebRequest -Uri $Uri -OutFile $tempPath -UseBasicParsing -ErrorAction Stop
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
+    $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    $response.EnsureSuccessStatusCode()
+
+    $contentLength = $response.Content.Headers.ContentLength
+    if ($null -ne $contentLength -and $contentLength -gt $BuildishInstallMaxToolFileBytes) {
+      throw "$Label exceeded the maximum allowed size of $BuildishInstallMaxToolFileBytes bytes."
+    }
+
+    $responseStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $fileStream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $buffer = New-Object byte[] 81920
+    [long]$totalBytes = 0
+    while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      $totalBytes += $bytesRead
+      if ($totalBytes -gt $BuildishInstallMaxToolFileBytes) {
+        throw "$Label exceeded the maximum allowed size of $BuildishInstallMaxToolFileBytes bytes."
+      }
+      $fileStream.Write($buffer, 0, $bytesRead)
+    }
+
+    $fileStream.Dispose()
+    $fileStream = $null
+    $responseStream.Dispose()
+    $responseStream = $null
     Move-Item -LiteralPath $tempPath -Destination $Path -Force
   } catch {
     Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
     throw "Unable to download $Label from '$Uri': $($_.Exception.Message)"
+  } finally {
+    if ($null -ne $fileStream) {
+      $fileStream.Dispose()
+    }
+    if ($null -ne $responseStream) {
+      $responseStream.Dispose()
+    }
+    if ($null -ne $response) {
+      $response.Dispose()
+    }
+    if ($null -ne $request) {
+      $request.Dispose()
+    }
+    if ($null -ne $client) {
+      $client.Dispose()
+    }
+    if ($null -ne $handler) {
+      $handler.Dispose()
+    }
   }
 }
 
@@ -142,6 +203,18 @@ function Save-BuildishToolFile {
   }
 }
 
+function Install-BuildishHelperFiles {
+  $helperFiles = @(
+    @{ Path = (Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.sh'); FileName = 'buildish-no-gradle-wrapper-jar.sh'; Label = 'POSIX helper script' },
+    @{ Path = (Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.ps1'); FileName = 'buildish-no-gradle-wrapper-jar.ps1'; Label = 'PowerShell helper script' },
+    @{ Path = $GradleInitScriptPath; FileName = 'buildish-no-gradle-wrapper-jar.init.gradle.kts'; Label = 'Gradle init script' }
+  )
+
+  foreach ($helperFile in $helperFiles) {
+    Save-BuildishToolFile -Path $helperFile.Path -FileName $helperFile.FileName -Label $helperFile.Label
+  }
+}
+
 # Normalize inserted multi-line text to match the target file's existing newline
 # convention so patched launchers remain platform-native.
 function Convert-BuildishTextToNewlineStyle {
@@ -155,10 +228,10 @@ function Convert-BuildishTextToNewlineStyle {
 
 # Insert one block after any one of several exact anchor lines unless that block
 # is already present.
-function Add-BuildishLineAfterAnyAnchor {
+function Add-BuildishBlockAfterAnyAnchor {
   param(
     [string]$Path,
-    [string]$Insertion,
+    [string]$InsertionBlock,
     [string]$Label,
     [string[]]$Anchors
   )
@@ -172,21 +245,21 @@ function Add-BuildishLineAfterAnyAnchor {
   $content = [System.IO.File]::ReadAllText($Path)
 
   $newline = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
-  $normalizedInsertion = Convert-BuildishTextToNewlineStyle -Text $Insertion -Newline $newline
-  if ($content.Contains($normalizedInsertion)) {
+  $normalizedInsertionBlock = Convert-BuildishTextToNewlineStyle -Text $InsertionBlock -Newline $newline
+  if ($content.Contains($normalizedInsertionBlock)) {
     return
   }
 
   foreach ($anchor in $Anchors) {
     $anchorWithNewline = "$anchor$newline"
     if ($content.Contains($anchorWithNewline)) {
-      $updated = $content.Replace($anchorWithNewline, "$anchor$newline$normalizedInsertion$newline")
-      [System.IO.File]::WriteAllText($Path, $updated, (Get-BuildishUtf8NoBomEncoding))
+      $updated = $content.Replace($anchorWithNewline, "$anchor$newline$normalizedInsertionBlock$newline")
+      Set-BuildishUtf8NoBomFileText -Path $Path -Content $updated
       return
     }
     if ($content.EndsWith($anchor)) {
-      $updated = $content.Substring(0, $content.Length - $anchor.Length) + "$anchor$newline$normalizedInsertion"
-      [System.IO.File]::WriteAllText($Path, $updated, (Get-BuildishUtf8NoBomEncoding))
+      $updated = $content.Substring(0, $content.Length - $anchor.Length) + "$anchor$newline$normalizedInsertionBlock"
+      Set-BuildishUtf8NoBomFileText -Path $Path -Content $updated
       return
     }
   }
@@ -197,7 +270,7 @@ function Add-BuildishLineAfterAnyAnchor {
 # Replace one exact generated line when present. Missing lines are tolerated here
 # because Gradle launcher shapes evolve; the installer performs a required-line
 # assertion afterwards to ensure the supported patched form exists.
-function Replace-BuildishLineIfPresent {
+function Replace-BuildishExactLineIfPresent {
   param(
     [string]$Path,
     [string]$CurrentLine,
@@ -227,25 +300,11 @@ function Replace-BuildishLineIfPresent {
     return
   }
 
-  [System.IO.File]::WriteAllText($Path, $updated, (Get-BuildishUtf8NoBomEncoding))
-}
-
-# Exact-line assertion used after patching.
-function Assert-BuildishLinePresent {
-  param(
-    [string]$Path,
-    [string]$ExpectedLine,
-    [string]$Label
-  )
-
-  $content = [System.IO.File]::ReadAllText($Path)
-  if (-not ($content -split "`r?`n" | Where-Object { $_ -eq $ExpectedLine } | Select-Object -First 1)) {
-    throw "Unable to apply the expected update to $Label at '$Path'."
-  }
+  Set-BuildishUtf8NoBomFileText -Path $Path -Content $updated
 }
 
 # Variant that accepts any of several supported exact lines.
-function Assert-BuildishAnyLinePresent {
+function Assert-BuildishAnyExactLinePresent {
   param(
     [string]$Path,
     [string[]]$ExpectedLines,
@@ -261,6 +320,21 @@ function Assert-BuildishAnyLinePresent {
   }
 
   throw "Unable to apply the expected update to $Label at '$Path'."
+}
+
+function Update-BuildishGradlewBat {
+  $supportedExecuteLineReplacements = @(
+    @{ Current = $GradlewBatOldExecuteLine; Replacement = $GradlewBatPatchedOldExecuteLine },
+    @{ Current = $GradlewBatLegacyExecuteLine; Replacement = $GradlewBatPatchedLegacyExecuteLine },
+    @{ Current = $GradlewBatCurrentExecuteLine; Replacement = $GradlewBatPatchedCurrentExecuteLine }
+  )
+
+  Replace-BuildishExactLineIfPresent -Path $GradlewBatPath -CurrentLine 'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"' -Replacement $GradlewBatHelperBlock -Label 'gradlew.bat'
+  Add-BuildishBlockAfterAnyAnchor -Path $GradlewBatPath -InsertionBlock $GradlewBatHelperBlock -Label 'gradlew.bat' -Anchors @('for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi')
+  foreach ($executeLineReplacement in $supportedExecuteLineReplacements) {
+    Replace-BuildishExactLineIfPresent -Path $GradlewBatPath -CurrentLine $executeLineReplacement.Current -Replacement $executeLineReplacement.Replacement -Label 'gradlew.bat'
+  }
+  Assert-BuildishAnyExactLinePresent -Path $GradlewBatPath -ExpectedLines @($supportedExecuteLineReplacements | ForEach-Object { $_.Replacement }) -Label 'gradlew.bat'
 }
 
 # Remove only regular files. This is used to delete an existing wrapper JAR so the
@@ -322,7 +396,7 @@ function Update-BuildishGitignore {
     [void]$builder.Append($entry).Append($newline)
   }
 
-  [System.IO.File]::WriteAllText($gitignorePath, $builder.ToString(), (Get-BuildishUtf8NoBomEncoding))
+  Set-BuildishUtf8NoBomFileText -Path $gitignorePath -Content $builder.ToString()
 }
 
 try {
@@ -375,20 +449,13 @@ if errorlevel 1 goto fail
 
   # Stage helper files before patching launchers so every inserted path points to
   # an existing project-local script.
-  Save-BuildishToolFile -Path (Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.sh') -FileName 'buildish-no-gradle-wrapper-jar.sh' -Label 'POSIX helper script'
-  Save-BuildishToolFile -Path (Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.ps1') -FileName 'buildish-no-gradle-wrapper-jar.ps1' -Label 'PowerShell helper script'
-  Save-BuildishToolFile -Path $GradleInitScriptPath -FileName 'buildish-no-gradle-wrapper-jar.init.gradle.kts' -Label 'Gradle init script'
+  Install-BuildishHelperFiles
   Remove-BuildishRegularFile -Path $GradleWrapperJarPath -Label 'gradle-wrapper.jar'
 
   # Patch the launchers and then assert that a supported final batch execute line
   # is present so new unsupported launcher shapes fail loudly during install.
-  Add-BuildishLineAfterAnyAnchor -Path $GradlewPath -Insertion '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' -Label 'gradlew' -Anchors @('APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf ''%s\n'' "$PWD" ) || exit', 'APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit')
-  Replace-BuildishLineIfPresent -Path $GradlewBatPath -CurrentLine 'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"' -Replacement $GradlewBatHelperBlock -Label 'gradlew.bat'
-  Add-BuildishLineAfterAnyAnchor -Path $GradlewBatPath -Insertion $GradlewBatHelperBlock -Label 'gradlew.bat' -Anchors @('for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi')
-  Replace-BuildishLineIfPresent -Path $GradlewBatPath -CurrentLine $GradlewBatOldExecuteLine -Replacement $GradlewBatPatchedOldExecuteLine -Label 'gradlew.bat'
-  Replace-BuildishLineIfPresent -Path $GradlewBatPath -CurrentLine $GradlewBatLegacyExecuteLine -Replacement $GradlewBatPatchedLegacyExecuteLine -Label 'gradlew.bat'
-  Replace-BuildishLineIfPresent -Path $GradlewBatPath -CurrentLine $GradlewBatCurrentExecuteLine -Replacement $GradlewBatPatchedCurrentExecuteLine -Label 'gradlew.bat'
-  Assert-BuildishAnyLinePresent -Path $GradlewBatPath -ExpectedLines @($GradlewBatPatchedOldExecuteLine, $GradlewBatPatchedLegacyExecuteLine, $GradlewBatPatchedCurrentExecuteLine) -Label 'gradlew.bat'
+  Add-BuildishBlockAfterAnyAnchor -Path $GradlewPath -InsertionBlock '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' -Label 'gradlew' -Anchors @('APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf ''%s\n'' "$PWD" ) || exit', 'APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit')
+  Update-BuildishGradlewBat
   Update-BuildishGitignore
 
   Write-Host "$BuildishToolName install: Installed helper files into '$GradleDirectory' and updated launcher scripts in '$TargetDirectoryAbsolute'."

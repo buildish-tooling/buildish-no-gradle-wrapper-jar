@@ -65,6 +65,57 @@ buildish_no_gradle_wrapper_jar_sha256_file() {
   buildish_no_gradle_wrapper_jar_fail "Neither 'sha256sum' nor 'shasum' is available for checksum verification."
 }
 
+# Return the byte size of a file as a plain decimal integer.
+buildish_no_gradle_wrapper_jar_file_size() {
+  wc -c < "$1" | tr -d '[:space:]'
+}
+
+# Check whether a file stays within the caller-supplied byte limit.
+buildish_no_gradle_wrapper_jar_file_within_max_size() {
+  actual_size=$(buildish_no_gradle_wrapper_jar_file_size "$1")
+  [ "$actual_size" -le "$2" ]
+}
+
+buildish_no_gradle_wrapper_jar_publish_temp_file() {
+  temp_path=$1
+  target_path=$2
+  failure_message=$3
+
+  if ! mv -f "$temp_path" "$target_path"; then
+    rm -f "$temp_path"
+    buildish_no_gradle_wrapper_jar_fail "$failure_message"
+  fi
+}
+
+# Download into a caller-provided temp path while enforcing a hard maximum size.
+# `curl --max-filesize` stops obviously oversized responses early when the server
+# provides a Content-Length, and the post-download size check keeps the limit in
+# force even if the server omits that header.
+buildish_no_gradle_wrapper_jar_download_to_temp_path() {
+  temp_path=$1
+  download_url=$2
+  resource_label=$3
+  max_size_bytes=$4
+  curl_stderr_path="${temp_path}.stderr"
+
+  if ! curl --fail --location --silent --show-error --max-filesize "$max_size_bytes" --output "$temp_path" "$download_url" 2>"$curl_stderr_path"; then
+    curl_output=$(cat "$curl_stderr_path" 2>/dev/null || true)
+    rm -f "$temp_path" "$curl_stderr_path"
+    if printf '%s' "$curl_output" | grep -Fq 'Maximum file size exceeded'; then
+      [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
+      buildish_no_gradle_wrapper_jar_fail "${resource_label} exceeded the maximum allowed size of ${max_size_bytes} bytes."
+    fi
+    [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
+    buildish_no_gradle_wrapper_jar_fail "Unable to download ${resource_label} from '${download_url}'."
+  fi
+
+  rm -f "$curl_stderr_path"
+  buildish_no_gradle_wrapper_jar_file_within_max_size "$temp_path" "$max_size_bytes" || {
+    rm -f "$temp_path"
+    buildish_no_gradle_wrapper_jar_fail "${resource_label} exceeded the maximum allowed size of ${max_size_bytes} bytes."
+  }
+}
+
 # Download to a temporary file first and move into place only after the transfer
 # succeeds. This avoids leaving behind partially written metadata files if the
 # network call fails or is interrupted.
@@ -72,18 +123,13 @@ buildish_no_gradle_wrapper_jar_download_to_file() {
   target_path=$1
   download_url=$2
   resource_label=$3
+  max_size_bytes=$4
   temp_path=$(mktemp "${BUILDISH_HELPER_WRAPPER_DIR}/.buildish-no-gradle-wrapper-jar.XXXXXX") ||
     buildish_no_gradle_wrapper_jar_fail "Unable to create a temporary file for ${resource_label}."
 
-  if ! curl --fail --location --silent --show-error --output "$temp_path" "$download_url"; then
-    rm -f "$temp_path"
-    buildish_no_gradle_wrapper_jar_fail "Unable to download ${resource_label} from '${download_url}'."
-  fi
+  buildish_no_gradle_wrapper_jar_download_to_temp_path "$temp_path" "$download_url" "$resource_label" "$max_size_bytes"
 
-  if ! mv -f "$temp_path" "$target_path"; then
-    rm -f "$temp_path"
-    buildish_no_gradle_wrapper_jar_fail "Unable to move ${resource_label} into '${target_path}'."
-  fi
+  buildish_no_gradle_wrapper_jar_publish_temp_file "$temp_path" "$target_path" "Unable to move ${resource_label} into '${target_path}'."
 }
 
 # Normalize checksum files into the exact shape the helper expects:
@@ -92,6 +138,7 @@ buildish_no_gradle_wrapper_jar_download_to_file() {
 # while rejecting malformed content that should be re-downloaded.
 buildish_no_gradle_wrapper_jar_normalize_checksum_file() {
   checksum_path=$1
+  buildish_no_gradle_wrapper_jar_file_within_max_size "$checksum_path" "$BUILDISH_HELPER_MAX_METADATA_BYTES" || return 1
   normalized_checksum=$(tr -d '\r\n' < "$checksum_path" | tr '[:upper:]' '[:lower:]')
   if ! printf '%s' "$normalized_checksum" | grep -E '^[0-9a-f]{64}$' >/dev/null 2>&1; then
     return 1
@@ -105,35 +152,47 @@ buildish_no_gradle_wrapper_jar_normalize_checksum_file() {
 # quick structural sanity check before the file is cached.
 buildish_no_gradle_wrapper_jar_validate_signature_file() {
   signature_path=$1
+  buildish_no_gradle_wrapper_jar_file_within_max_size "$signature_path" "$BUILDISH_HELPER_MAX_METADATA_BYTES" || return 1
   first_line=$(sed -n '1p' "$signature_path")
   [ "$first_line" = '-----BEGIN PGP SIGNATURE-----' ]
+}
+
+buildish_no_gradle_wrapper_jar_ensure_cached_file() {
+  target_path=$1
+  download_url=$2
+  resource_label=$3
+  max_size_bytes=$4
+  validator_function=$5
+  invalid_download_message=$6
+
+  if [ -f "$target_path" ] && "$validator_function" "$target_path"; then
+    return 0
+  fi
+
+  rm -f "$target_path"
+  buildish_no_gradle_wrapper_jar_download_to_file "$target_path" "$download_url" "$resource_label" "$max_size_bytes"
+  "$validator_function" "$target_path" || buildish_no_gradle_wrapper_jar_fail "$invalid_download_message"
 }
 
 # Ensure the per-version metadata files are present and structurally valid. If a
 # local file is missing or malformed, delete it and fetch a clean copy so later
 # verification steps can assume well-formed inputs.
 buildish_no_gradle_wrapper_jar_ensure_metadata_files() {
-  if [ ! -f "$BUILDISH_HELPER_SHA256_PATH" ] ||
-     ! buildish_no_gradle_wrapper_jar_normalize_checksum_file "$BUILDISH_HELPER_SHA256_PATH"; then
-    rm -f "$BUILDISH_HELPER_SHA256_PATH"
-    buildish_no_gradle_wrapper_jar_download_to_file \
-      "$BUILDISH_HELPER_SHA256_PATH" \
-      "$BUILDISH_HELPER_SHA256_URL" \
-      "wrapper checksum"
-    buildish_no_gradle_wrapper_jar_normalize_checksum_file "$BUILDISH_HELPER_SHA256_PATH" ||
-      buildish_no_gradle_wrapper_jar_fail "Downloaded wrapper checksum was not a valid SHA-256 value."
-  fi
+  buildish_no_gradle_wrapper_jar_ensure_cached_file \
+    "$BUILDISH_HELPER_SHA256_PATH" \
+    "$BUILDISH_HELPER_SHA256_URL" \
+    'wrapper checksum' \
+    "$BUILDISH_HELPER_MAX_METADATA_BYTES" \
+    buildish_no_gradle_wrapper_jar_normalize_checksum_file \
+    'Downloaded wrapper checksum was not a valid SHA-256 value.'
 
-  if [ ! -f "$BUILDISH_HELPER_SIGNATURE_PATH" ] ||
-     ! buildish_no_gradle_wrapper_jar_validate_signature_file "$BUILDISH_HELPER_SIGNATURE_PATH"; then
-    rm -f "$BUILDISH_HELPER_SIGNATURE_PATH"
-    buildish_no_gradle_wrapper_jar_download_to_file \
-      "$BUILDISH_HELPER_SIGNATURE_PATH" \
-      "$BUILDISH_HELPER_SIGNATURE_URL" \
-      "wrapper detached signature"
-    buildish_no_gradle_wrapper_jar_validate_signature_file "$BUILDISH_HELPER_SIGNATURE_PATH" ||
-      buildish_no_gradle_wrapper_jar_fail "Downloaded wrapper detached signature was not valid ASCII-armored OpenPGP data."
-  fi
+  buildish_no_gradle_wrapper_jar_ensure_cached_file \
+    "$BUILDISH_HELPER_SIGNATURE_PATH" \
+    "$BUILDISH_HELPER_SIGNATURE_URL" \
+    'wrapper detached signature' \
+    "$BUILDISH_HELPER_MAX_METADATA_BYTES" \
+    buildish_no_gradle_wrapper_jar_validate_signature_file \
+    'Downloaded wrapper detached signature was not valid ASCII-armored OpenPGP data.'
 }
 
 # Verify a wrapper JAR against the pinned Gradle signing key in an isolated,
@@ -257,6 +316,8 @@ BUILDISH_HELPER_WRAPPER_DIR="${APP_HOME}/gradle/wrapper"
 BUILDISH_HELPER_PROPERTIES_PATH="${BUILDISH_HELPER_WRAPPER_DIR}/gradle-wrapper.properties"
 BUILDISH_HELPER_JAR_PATH="${BUILDISH_HELPER_WRAPPER_DIR}/gradle-wrapper.jar"
 BUILDISH_HELPER_INIT_SCRIPT_PATH="${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+BUILDISH_HELPER_MAX_METADATA_BYTES=65536
+BUILDISH_HELPER_MAX_JAR_BYTES=10485760
 
 # If the project-local init script exists, prepend it once. The init script hooks
 # the Gradle `Wrapper` task so that when Gradle regenerates `gradlew` or
@@ -334,10 +395,12 @@ expected_wrapper_checksum=$(tr -d '\r\n' < "$BUILDISH_HELPER_SHA256_PATH" | tr '
 # Fast path: if the project already has a wrapper JAR with the expected checksum
 # and a valid detached signature, leave it in place and return immediately.
 if [ -f "$BUILDISH_HELPER_JAR_PATH" ]; then
-  existing_wrapper_checksum=$(buildish_no_gradle_wrapper_jar_sha256_file "$BUILDISH_HELPER_JAR_PATH")
-  if [ "$existing_wrapper_checksum" = "$expected_wrapper_checksum" ] &&
-     buildish_no_gradle_wrapper_jar_verify_signature "$BUILDISH_HELPER_SIGNATURE_PATH" "$BUILDISH_HELPER_JAR_PATH"; then
-    return 0 2>/dev/null || exit 0
+  if buildish_no_gradle_wrapper_jar_file_within_max_size "$BUILDISH_HELPER_JAR_PATH" "$BUILDISH_HELPER_MAX_JAR_BYTES"; then
+    existing_wrapper_checksum=$(buildish_no_gradle_wrapper_jar_sha256_file "$BUILDISH_HELPER_JAR_PATH")
+    if [ "$existing_wrapper_checksum" = "$expected_wrapper_checksum" ] &&
+       buildish_no_gradle_wrapper_jar_verify_signature "$BUILDISH_HELPER_SIGNATURE_PATH" "$BUILDISH_HELPER_JAR_PATH"; then
+      return 0 2>/dev/null || exit 0
+    fi
   fi
   # Do not keep a locally cached JAR that no longer matches the authoritative
   # checksum/signature pair. Removing it before the slow path prevents stale or
@@ -350,10 +413,11 @@ fi
 downloaded_wrapper_path=$(mktemp "${BUILDISH_HELPER_WRAPPER_DIR}/.buildish-no-gradle-wrapper-jar-wrapper.XXXXXX") ||
   buildish_no_gradle_wrapper_jar_fail "Unable to create a temporary path for the wrapper JAR download."
 
-if ! curl --fail --location --silent --show-error --output "$downloaded_wrapper_path" "$BUILDISH_HELPER_JAR_URL"; then
-  rm -f "$downloaded_wrapper_path"
-  buildish_no_gradle_wrapper_jar_fail "Unable to download Gradle wrapper JAR from '${BUILDISH_HELPER_JAR_URL}'."
-fi
+buildish_no_gradle_wrapper_jar_download_to_temp_path \
+  "$downloaded_wrapper_path" \
+  "$BUILDISH_HELPER_JAR_URL" \
+  "Gradle wrapper JAR" \
+  "$BUILDISH_HELPER_MAX_JAR_BYTES"
 
 downloaded_wrapper_checksum=$(buildish_no_gradle_wrapper_jar_sha256_file "$downloaded_wrapper_path")
 [ "$downloaded_wrapper_checksum" = "$expected_wrapper_checksum" ] || {
@@ -369,7 +433,7 @@ buildish_no_gradle_wrapper_jar_verify_signature "$BUILDISH_HELPER_SIGNATURE_PATH
 # Replace the target JAR only after both verification steps succeed. Until then
 # the candidate stays in a temp path so the wrapper directory never advertises an
 # unverified `gradle-wrapper.jar` to a concurrent shell or editor scan.
-mv -f "$downloaded_wrapper_path" "$BUILDISH_HELPER_JAR_PATH" || {
-  rm -f "$downloaded_wrapper_path"
-  buildish_no_gradle_wrapper_jar_fail "Unable to install the verified Gradle wrapper JAR into '${BUILDISH_HELPER_JAR_PATH}'."
-}
+buildish_no_gradle_wrapper_jar_publish_temp_file \
+  "$downloaded_wrapper_path" \
+  "$BUILDISH_HELPER_JAR_PATH" \
+  "Unable to install the verified Gradle wrapper JAR into '${BUILDISH_HELPER_JAR_PATH}'."

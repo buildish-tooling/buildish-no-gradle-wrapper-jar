@@ -45,6 +45,8 @@ $ProgressPreference = 'SilentlyContinue'
 # the exact Gradle signing key and verify the fingerprint before importing it into
 # the temporary GPG home used for each validation run.
 $TrustedGradleKeyFingerprint = '1bd97a6a154e7810ee0bc832e2f38302c8075e3d'
+$BuildishMetadataMaxBytes = 64KB
+$BuildishWrapperJarMaxBytes = 10MB
 $TrustedGradlePublicKey = @'
 -----BEGIN PGP PUBLIC KEY BLOCK-----
 
@@ -135,6 +137,26 @@ function Write-BuildishNoGradleWrapperJarAsciiFile {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::ASCII)
 }
 
+# Reject unexpectedly large files before reading or trusting them. This constrains
+# resource usage for both cached inputs and newly downloaded artifacts.
+function Assert-BuildishMaxFileSize {
+  param(
+    [string]$Path,
+    [long]$MaxBytes,
+    [string]$Label
+  )
+
+  if ((Get-Item -LiteralPath $Path -Force).Length -gt $MaxBytes) {
+    throw "$Label exceeded the maximum allowed size of $MaxBytes bytes."
+  }
+}
+
+function Get-BuildishNoGradleWrapperJarFileSha256 {
+  param([string]$Path)
+
+  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
 # Quote one argument using the Windows command-line escaping rules expected by the
 # eventual Java process. The helper emits this quoted fragment back to cmd.exe.
 function ConvertTo-BuildishWindowsCommandLineArgument {
@@ -203,12 +225,34 @@ function Get-BuildishNoGradleWrapperJarInjectedInitScriptArguments {
 function Get-BuildishNoGradleWrapperJarExpectedSha256 {
   param([string]$Path)
 
+  Assert-BuildishMaxFileSize -Path $Path -MaxBytes $BuildishMetadataMaxBytes -Label 'wrapper checksum'
   $checksum = (Get-Content -LiteralPath $Path -Raw).Trim().ToLowerInvariant()
   if ($checksum -notmatch '^[0-9a-f]{64}$') {
     throw "Wrapper checksum file '$Path' did not contain a valid SHA-256 value."
   }
   Write-BuildishNoGradleWrapperJarAsciiFile -Path $Path -Content "$checksum`n"
   return $checksum
+}
+
+function Test-BuildishNoGradleWrapperJarChecksumFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return $false
+  }
+
+  try {
+    [void](Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $Path)
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Assert-BuildishNoGradleWrapperJarDownloadedChecksumFile {
+  param([string]$Path)
+
+  [void](Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $Path)
 }
 
 # Lightweight structural check for detached-signature cache files. Full crypto
@@ -220,8 +264,22 @@ function Test-BuildishNoGradleWrapperJarSignatureFile {
     return $false
   }
 
+  try {
+    Assert-BuildishMaxFileSize -Path $Path -MaxBytes $BuildishMetadataMaxBytes -Label 'wrapper detached signature'
+  } catch {
+    return $false
+  }
+
   $firstLine = Get-Content -LiteralPath $Path -TotalCount 1
   return $firstLine -eq '-----BEGIN PGP SIGNATURE-----'
+}
+
+function Assert-BuildishNoGradleWrapperJarDownloadedSignatureFile {
+  param([string]$Path)
+
+  if (-not (Test-BuildishNoGradleWrapperJarSignatureFile -Path $Path)) {
+    throw 'Downloaded wrapper detached signature was not valid ASCII-armored OpenPGP data.'
+  }
 }
 
 # Download a file to a temp path, optionally validate it, then move it into place.
@@ -231,12 +289,45 @@ function Save-BuildishNoGradleWrapperJarDownloadedFile {
     [string]$Path,
     [string]$Uri,
     [string]$Label,
+    [long]$MaxBytes,
     [scriptblock]$Validator
   )
 
   $tempPath = New-BuildishNoGradleWrapperJarTempPath -Directory $GradleWrapperDirectory
+  $handler = $null
+  $client = $null
+  $request = $null
+  $response = $null
+  $responseStream = $null
+  $fileStream = $null
   try {
-    Invoke-WebRequest -Uri $Uri -OutFile $tempPath -UseBasicParsing -ErrorAction Stop
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
+    $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    $response.EnsureSuccessStatusCode()
+
+    $contentLength = $response.Content.Headers.ContentLength
+    if ($null -ne $contentLength -and $contentLength -gt $MaxBytes) {
+      throw "$Label exceeded the maximum allowed size of $MaxBytes bytes."
+    }
+
+    $responseStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $fileStream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $buffer = New-Object byte[] 81920
+    [long]$totalBytes = 0
+    while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+      $totalBytes += $bytesRead
+      if ($totalBytes -gt $MaxBytes) {
+        throw "$Label exceeded the maximum allowed size of $MaxBytes bytes."
+      }
+      $fileStream.Write($buffer, 0, $bytesRead)
+    }
+    $fileStream.Dispose()
+    $fileStream = $null
+    $responseStream.Dispose()
+    $responseStream = $null
+
     if ($null -ne $Validator) {
       & $Validator $tempPath
     }
@@ -244,38 +335,79 @@ function Save-BuildishNoGradleWrapperJarDownloadedFile {
   } catch {
     Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
     throw "Unable to download $Label from '$Uri': $($_.Exception.Message)"
+  } finally {
+    if ($null -ne $fileStream) {
+      $fileStream.Dispose()
+    }
+    if ($null -ne $responseStream) {
+      $responseStream.Dispose()
+    }
+    if ($null -ne $response) {
+      $response.Dispose()
+    }
+    if ($null -ne $request) {
+      $request.Dispose()
+    }
+    if ($null -ne $client) {
+      $client.Dispose()
+    }
+    if ($null -ne $handler) {
+      $handler.Dispose()
+    }
   }
+}
+
+function Ensure-BuildishNoGradleWrapperJarMetadataFile {
+  param(
+    [string]$Path,
+    [string]$Uri,
+    [string]$Label,
+    [long]$MaxBytes,
+    [scriptblock]$IsValid,
+    [scriptblock]$ValidateDownloaded
+  )
+
+  if (& $IsValid $Path) {
+    return
+  }
+
+  Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  Save-BuildishNoGradleWrapperJarDownloadedFile -Path $Path -Uri $Uri -Label $Label -MaxBytes $MaxBytes -Validator $ValidateDownloaded
 }
 
 # Ensure the per-version checksum and detached-signature files are present and
 # minimally well formed before the wrapper JAR is trusted or downloaded.
 function Ensure-BuildishNoGradleWrapperJarMetadataFiles {
-  if (-not (Test-Path -LiteralPath $GradleWrapperSha256Path -PathType Leaf)) {
-    Save-BuildishNoGradleWrapperJarDownloadedFile -Path $GradleWrapperSha256Path -Uri $GradleWrapperSha256Url -Label 'wrapper checksum' -Validator {
-      param($DownloadedPath)
-      [void](Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $DownloadedPath)
-    }
-  } else {
-    try {
-      [void](Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $GradleWrapperSha256Path)
-    } catch {
-      Remove-Item -LiteralPath $GradleWrapperSha256Path -Force -ErrorAction SilentlyContinue
-      Save-BuildishNoGradleWrapperJarDownloadedFile -Path $GradleWrapperSha256Path -Uri $GradleWrapperSha256Url -Label 'wrapper checksum' -Validator {
-        param($DownloadedPath)
-        [void](Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $DownloadedPath)
-      }
-    }
+  Ensure-BuildishNoGradleWrapperJarMetadataFile -Path $GradleWrapperSha256Path -Uri $GradleWrapperSha256Url -Label 'wrapper checksum' -MaxBytes $BuildishMetadataMaxBytes -IsValid {
+    param($CandidatePath)
+    Test-BuildishNoGradleWrapperJarChecksumFile -Path $CandidatePath
+  } -ValidateDownloaded {
+    param($DownloadedPath)
+    Assert-BuildishNoGradleWrapperJarDownloadedChecksumFile -Path $DownloadedPath
   }
 
-  if (-not (Test-BuildishNoGradleWrapperJarSignatureFile -Path $GradleWrapperSignaturePath)) {
-    Remove-Item -LiteralPath $GradleWrapperSignaturePath -Force -ErrorAction SilentlyContinue
-    Save-BuildishNoGradleWrapperJarDownloadedFile -Path $GradleWrapperSignaturePath -Uri $GradleWrapperSignatureUrl -Label 'wrapper detached signature' -Validator {
-      param($DownloadedPath)
-      if (-not (Test-BuildishNoGradleWrapperJarSignatureFile -Path $DownloadedPath)) {
-        throw "Downloaded wrapper detached signature was not valid ASCII-armored OpenPGP data."
-      }
-    }
+  Ensure-BuildishNoGradleWrapperJarMetadataFile -Path $GradleWrapperSignaturePath -Uri $GradleWrapperSignatureUrl -Label 'wrapper detached signature' -MaxBytes $BuildishMetadataMaxBytes -IsValid {
+    param($CandidatePath)
+    Test-BuildishNoGradleWrapperJarSignatureFile -Path $CandidatePath
+  } -ValidateDownloaded {
+    param($DownloadedPath)
+    Assert-BuildishNoGradleWrapperJarDownloadedSignatureFile -Path $DownloadedPath
   }
+}
+
+function Invoke-BuildishNoGradleWrapperJarGpg {
+  param(
+    [string]$GpgCommand,
+    [string]$GpgHome,
+    [string[]]$Arguments,
+    [string]$FailurePrefix
+  )
+
+  $output = (& $GpgCommand --homedir $GpgHome --batch --no-options @Arguments 2>&1 | Out-String)
+  if ($LASTEXITCODE -ne 0) {
+    throw "${FailurePrefix}: $output"
+  }
+  return $output
 }
 
 # Perform detached-signature verification in a fresh temporary GPG home. This
@@ -296,10 +428,7 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
     New-Item -ItemType Directory -Path $gpgHome -Force | Out-Null
     Write-BuildishNoGradleWrapperJarAsciiFile -Path $trustedKeyPath -Content $TrustedGradlePublicKey
 
-    $fingerprintOutput = (& $GpgCommand --homedir $gpgHome --batch --no-options --show-keys --with-colons --fingerprint $trustedKeyPath 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-      throw "Unable to inspect pinned Gradle signing key: $fingerprintOutput"
-    }
+    $fingerprintOutput = Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome $gpgHome -Arguments @('--show-keys', '--with-colons', '--fingerprint', $trustedKeyPath) -FailurePrefix 'Unable to inspect pinned Gradle signing key'
 
     $fingerprintLine = ($fingerprintOutput -split "`r?`n" | Where-Object { $_.StartsWith('fpr:') } | Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($fingerprintLine)) {
@@ -311,15 +440,8 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
       throw 'Pinned Gradle signing key fingerprint mismatch.'
     }
 
-    $importOutput = (& $GpgCommand --homedir $gpgHome --batch --no-options --import $trustedKeyPath 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-      throw "Unable to import pinned Gradle signing key: $importOutput"
-    }
-
-    $verifyOutput = (& $GpgCommand --homedir $gpgHome --batch --no-options --no-auto-key-retrieve --verify $SignaturePath $PayloadPath 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-      throw "Detached signature verification failed: $verifyOutput"
-    }
+    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome $gpgHome -Arguments @('--import', $trustedKeyPath) -FailurePrefix 'Unable to import pinned Gradle signing key')
+    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome $gpgHome -Arguments @('--no-auto-key-retrieve', '--verify', $SignaturePath, $PayloadPath) -FailurePrefix 'Detached signature verification failed')
   } finally {
     Remove-Item -LiteralPath $tempDirectory -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -388,7 +510,8 @@ try {
   # and validates against the detached signature, keep it.
   if (Test-Path -LiteralPath $GradleWrapperJarPath -PathType Leaf) {
     try {
-      $existingChecksum = (Get-FileHash -LiteralPath $GradleWrapperJarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      Assert-BuildishMaxFileSize -Path $GradleWrapperJarPath -MaxBytes $BuildishWrapperJarMaxBytes -Label 'Gradle wrapper JAR'
+      $existingChecksum = Get-BuildishNoGradleWrapperJarFileSha256 -Path $GradleWrapperJarPath
       if ($existingChecksum -eq $ExpectedWrapperSha256) {
         Test-BuildishNoGradleWrapperJarDetachedSignature -SignaturePath $GradleWrapperSignaturePath -PayloadPath $GradleWrapperJarPath -GpgCommand $GpgCommand
         $wrapperJarReady = $true
@@ -407,20 +530,14 @@ try {
 
   # Slow path: download, verify, and install a fresh wrapper JAR.
   if (-not $wrapperJarReady) {
-    $downloadedWrapperPath = New-BuildishNoGradleWrapperJarTempPath -Directory $GradleWrapperDirectory
-    try {
-      Invoke-WebRequest -Uri $GradleWrapperJarUrl -OutFile $downloadedWrapperPath -UseBasicParsing -ErrorAction Stop
-      $downloadedChecksum = (Get-FileHash -LiteralPath $downloadedWrapperPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Save-BuildishNoGradleWrapperJarDownloadedFile -Path $GradleWrapperJarPath -Uri $GradleWrapperJarUrl -Label 'Gradle wrapper JAR' -MaxBytes $BuildishWrapperJarMaxBytes -Validator {
+      param($DownloadedPath)
+      $downloadedChecksum = Get-BuildishNoGradleWrapperJarFileSha256 -Path $DownloadedPath
       if ($downloadedChecksum -ne $ExpectedWrapperSha256) {
         throw 'Downloaded Gradle wrapper JAR checksum did not match the expected SHA-256.'
       }
 
-      Test-BuildishNoGradleWrapperJarDetachedSignature -SignaturePath $GradleWrapperSignaturePath -PayloadPath $downloadedWrapperPath -GpgCommand $GpgCommand
-      # Publish the candidate JAR into the wrapper directory only after checksum
-      # and detached-signature verification have both succeeded.
-      Move-Item -LiteralPath $downloadedWrapperPath -Destination $GradleWrapperJarPath -Force
-    } finally {
-      Remove-Item -LiteralPath $downloadedWrapperPath -Force -ErrorAction SilentlyContinue
+      Test-BuildishNoGradleWrapperJarDetachedSignature -SignaturePath $GradleWrapperSignaturePath -PayloadPath $DownloadedPath -GpgCommand $GpgCommand
     }
   }
 
