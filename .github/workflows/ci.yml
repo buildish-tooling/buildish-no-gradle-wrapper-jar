@@ -44,7 +44,7 @@ jobs:
         uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: '21'
 
       - name: Install Gradle 8.14.4
         env:
@@ -67,6 +67,47 @@ jobs:
 
       - name: Apache RAT check
         run: sh scripts/rat-check.sh
+
+  windows-check:
+    name: Windows check
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Gradle 8.14.4
+        env:
+          GRADLE_VERSION: 8.14.4
+        shell: pwsh
+        run: |
+          $archive = Join-Path -Path $env:RUNNER_TEMP -ChildPath "gradle-$env:GRADLE_VERSION-bin.zip"
+          Invoke-WebRequest -Uri "https://services.gradle.org/distributions/gradle-$env:GRADLE_VERSION-bin.zip" -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $env:RUNNER_TEMP -Force
+          $gradleBinDirectory = Join-Path -Path (Join-Path -Path $env:RUNNER_TEMP -ChildPath "gradle-$env:GRADLE_VERSION") -ChildPath 'bin'
+          Add-Content -Path $env:GITHUB_PATH -Value $gradleBinDirectory
+
+      - name: Verify required toolchain
+        shell: pwsh
+        run: |
+          Get-Command gradle | Out-Null
+          Get-Command bash | Out-Null
+          Get-Command pwsh | Out-Null
+          if (-not (Get-Command gpg.exe -ErrorAction SilentlyContinue) -and -not (Get-Command gpg -ErrorAction SilentlyContinue)) {
+            throw 'gpg.exe or gpg was not found on PATH.'
+          }
+
+      - name: Run Windows launcher integration suite
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -File tests/windows-integration.ps1
 
   codeql:
     name: CodeQL
@@ -113,6 +154,7 @@ jobs:
     if: ${{ always() }}
     needs:
       - check
+      - windows-check
       - codeql
       - zizmor
     runs-on: ubuntu-latest
@@ -120,11 +162,13 @@ jobs:
       - name: Assert all required jobs succeeded or were intentionally skipped
         env:
           CHECK_RESULT: ${{ needs.check.result }}
+          WINDOWS_CHECK_RESULT: ${{ needs.windows-check.result }}
           CODEQL_RESULT: ${{ needs.codeql.result }}
           ZIZMOR_RESULT: ${{ needs.zizmor.result }}
         run: |
           for result in \
             "$CHECK_RESULT" \
+            "$WINDOWS_CHECK_RESULT" \
             "$CODEQL_RESULT" \
             "$ZIZMOR_RESULT"; do
             case "$result" in

@@ -29,6 +29,7 @@ set -eu
 TOOL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_DIR=$TOOL_DIR/build/tests
 UPDATED_GRADLE_VERSION=${UPDATED_GRADLE_VERSION:-8.14}
+TWO_SEGMENT_GRADLE_VERSION=${TWO_SEGMENT_GRADLE_VERSION:-8.3}
 
 fail() {
   echo "integration-test: $*" >&2
@@ -64,6 +65,36 @@ assert_last_output_contains() {
   expected_text=$1
   failure_message=$2
   printf '%s' "$CAPTURED_OUTPUT" | grep -Fq "$expected_text" || fail "$failure_message (output=$CAPTURED_OUTPUT)"
+}
+
+assert_last_output_not_contains() {
+  unexpected_text=$1
+  failure_message=$2
+  if printf '%s' "$CAPTURED_OUTPUT" | grep -Fq "$unexpected_text"; then
+    fail "$failure_message (output=$CAPTURED_OUTPUT)"
+  fi
+}
+
+assert_last_output_equals() {
+  expected_text=$1
+  failure_message=$2
+  [ "$CAPTURED_OUTPUT" = "$expected_text" ] || fail "$failure_message (output=$CAPTURED_OUTPUT)"
+}
+
+assert_last_output_exact_line_count() {
+  expected_line=$1
+  expected_count=$2
+  failure_message=$3
+  CAPTURED_OUTPUT_FOR_PY=$CAPTURED_OUTPUT python3 - <<'PY' "$expected_line" "$expected_count" || fail "$failure_message (output=$CAPTURED_OUTPUT)"
+import sys
+import os
+
+expected_line = sys.argv[1]
+expected_count = int(sys.argv[2])
+lines = os.environ['CAPTURED_OUTPUT_FOR_PY'].splitlines()
+actual_count = sum(1 for line in lines if line == expected_line)
+raise SystemExit(0 if actual_count == expected_count else 1)
+PY
 }
 
 source_sdkman_gradle() {
@@ -139,6 +170,31 @@ gradle_user_home() {
   printf '%s-gradle-user-home' "$1"
 }
 
+gradle_init_script_path() {
+  printf '%s/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts' "$1"
+}
+
+copy_project_fixture() {
+  source_dir=$1
+  target_dir=$2
+  rm -rf "$target_dir"
+  mkdir -p "$(dirname "$target_dir")"
+  cp -R "$source_dir" "$target_dir"
+}
+
+copy_init_script_into_project() {
+  project_dir=$1
+  mkdir -p "$project_dir/gradle"
+  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" "$(gradle_init_script_path "$project_dir")"
+}
+
+copy_init_script_fixture() {
+  source_dir=$1
+  target_dir=$2
+  copy_project_fixture "$source_dir" "$target_dir"
+  copy_init_script_into_project "$target_dir"
+}
+
 gradle_init_fixture() {
   project_dir=$1
   bootstrap_gradle_version=${2:-}
@@ -175,6 +231,30 @@ raise SystemExit(0 if sys.argv[2] in lines else 1)
 PY
 }
 
+file_has_exact_line_count() {
+  file_path=$1
+  expected_line=$2
+  expected_count=$3
+  python3 - <<'PY' "$file_path" "$expected_line" "$expected_count"
+from pathlib import Path
+import sys
+
+lines = Path(sys.argv[1]).read_text().splitlines()
+expected_line = sys.argv[2]
+expected_count = int(sys.argv[3])
+actual_count = sum(1 for line in lines if line == expected_line)
+raise SystemExit(0 if actual_count == expected_count else 1)
+PY
+}
+
+assert_file_exact_line_count() {
+  file_path=$1
+  expected_line=$2
+  expected_count=$3
+  failure_message=$4
+  file_has_exact_line_count "$file_path" "$expected_line" "$expected_count" || fail "$failure_message"
+}
+
 file_contains_text() {
   file_path=$1
   expected_text=$2
@@ -183,6 +263,32 @@ from pathlib import Path
 import sys
 text = Path(sys.argv[1]).read_text().replace('\r\n', '\n')
 raise SystemExit(0 if sys.argv[2] in text else 1)
+PY
+}
+
+assert_file_newline_shape() {
+  file_path=$1
+  expected_style=$2
+  expected_trailing_newline=$3
+  failure_message=$4
+  python3 - <<'PY' "$file_path" "$expected_style" "$expected_trailing_newline" || fail "$failure_message"
+from pathlib import Path
+import sys
+
+data = Path(sys.argv[1]).read_bytes()
+expected_style = sys.argv[2]
+expected_trailing_newline = sys.argv[3]
+
+if expected_style == 'lf':
+    style_ok = b'\r\n' not in data and b'\n' in data
+    trailing_ok = data.endswith(b'\n') if expected_trailing_newline == 'yes' else not data.endswith(b'\n')
+elif expected_style == 'crlf':
+    style_ok = b'\r\n' in data and b'\n' not in data.replace(b'\r\n', b'')
+    trailing_ok = data.endswith(b'\r\n') if expected_trailing_newline == 'yes' else not data.endswith(b'\r\n')
+else:
+    raise SystemExit(1)
+
+raise SystemExit(0 if style_ok and trailing_ok else 1)
 PY
 }
 
@@ -276,6 +382,19 @@ run_wrapper_capture() {
   rm -f "$output_file"
 }
 
+run_gradle_with_init_script_capture() {
+  project_dir=$1
+  shift
+  output_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-test.XXXXXX")
+  log "running gradle $* with init script in '$project_dir' (GRADLE_USER_HOME='$(gradle_user_home "$project_dir")')"
+  set +e
+  (cd "$project_dir" && GRADLE_USER_HOME=$(gradle_user_home "$project_dir") gradle -p "$project_dir" --no-daemon --console=plain --init-script "$(gradle_init_script_path "$project_dir")" "$@") >"$output_file" 2>&1
+  CAPTURED_STATUS=$?
+  set -e
+  CAPTURED_OUTPUT=$(cat "$output_file")
+  rm -f "$output_file"
+}
+
 run_posix_installer_capture() {
   project_dir=$1
   log "installing POSIX helper into '$project_dir'"
@@ -295,11 +414,20 @@ run_posix_helper_direct() {
   run_and_capture env APP_HOME="$project_dir" sh -c 'helper_path=$1; set --; . "$helper_path"' sh "$helper_path"
 }
 
+run_posix_helper_direct_capture_args() {
+  project_dir=$1
+  shift
+  helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
+  log "running POSIX helper directly in '$project_dir' with args: $*"
+  run_and_capture env APP_HOME="$project_dir" sh -c 'helper_path=$1; shift; set -- "$@"; . "$helper_path"; for arg do printf "%s\n" "$arg"; done' sh "$helper_path" "$@"
+}
+
 run_powershell_helper_direct() {
   project_dir=$1
+  original_args=${2:-}
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1"
   log "running PowerShell helper directly in '$project_dir'"
-  run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS='' pwsh -NoLogo -NoProfile -File "$helper_path"
+  run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" pwsh -NoLogo -NoProfile -File "$helper_path"
 }
 
 assert_installer_distribution_sha_warning_output() {
@@ -327,6 +455,47 @@ exercise_helper_recovery_scenario() {
 
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_succeeded "$helper_kind helper did not recover from a corrupted wrapper JAR plus missing metadata."
+  assert_metadata_for_version "$project_dir" "$version"
+}
+
+exercise_helper_recovery_with_cached_metadata() {
+  project_dir=$1
+  version=$2
+  helper_kind=$3
+  jar_path="$project_dir/gradle/wrapper/gradle-wrapper.jar"
+
+  log "exercising $helper_kind helper cached-metadata recovery scenario in '$project_dir' for Gradle '$version'"
+  printf 'corrupted-wrapper-jar\n' > "$jar_path"
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_succeeded "$helper_kind helper did not recover from a corrupted wrapper JAR while cached metadata remained present."
+  assert_metadata_for_version "$project_dir" "$version"
+}
+
+exercise_helper_malformed_metadata_recovery() {
+  project_dir=$1
+  version=$2
+  helper_kind=$3
+  metadata_kind=$4
+  sha_path="$project_dir/gradle/wrapper/gradle-wrapper-$version.sha256"
+  asc_path="$project_dir/gradle/wrapper/gradle-wrapper-$version.asc"
+
+  case "$metadata_kind" in
+    sha256)
+      log "exercising $helper_kind helper malformed-checksum recovery scenario in '$project_dir' for Gradle '$version'"
+      printf 'not-a-sha256\n' > "$sha_path"
+      ;;
+    asc)
+      log "exercising $helper_kind helper malformed-signature recovery scenario in '$project_dir' for Gradle '$version'"
+      printf 'not-a-signature\n' > "$asc_path"
+      ;;
+    *)
+      fail "unknown metadata kind '$metadata_kind'"
+      ;;
+  esac
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_succeeded "$helper_kind helper did not recover from malformed cached $metadata_kind metadata."
   assert_metadata_for_version "$project_dir" "$version"
 }
 
@@ -358,6 +527,258 @@ exercise_installer_missing_properties_failure() {
 
   assert_last_output_contains 'Gradle wrapper properties file' "$installer_kind installer failure output did not mention the missing gradle-wrapper.properties file."
   assert_last_output_contains 'was not found' "$installer_kind installer failure output did not mention that gradle-wrapper.properties was missing."
+}
+
+exercise_helper_missing_properties_failure() {
+  project_dir=$1
+  helper_kind=$2
+
+  log "exercising $helper_kind helper missing-properties failure in '$project_dir'"
+  rm -f "$project_dir/gradle/wrapper/gradle-wrapper.properties"
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_failed "$helper_kind helper unexpectedly succeeded without gradle-wrapper.properties."
+  assert_last_output_contains 'Gradle wrapper properties file' "$helper_kind helper failure output did not mention the missing gradle-wrapper.properties file."
+  assert_last_output_contains 'was not found' "$helper_kind helper failure output did not mention that gradle-wrapper.properties was missing."
+}
+
+exercise_helper_missing_distribution_url_failure() {
+  project_dir=$1
+  helper_kind=$2
+  properties_path="$project_dir/gradle/wrapper/gradle-wrapper.properties"
+
+  log "exercising $helper_kind helper missing-distributionUrl failure in '$project_dir'"
+  remove_wrapper_property "$properties_path" distributionUrl
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_failed "$helper_kind helper unexpectedly succeeded without distributionUrl."
+  assert_last_output_contains 'distributionUrl entry' "$helper_kind helper failure output did not mention the missing distributionUrl entry."
+}
+
+exercise_helper_two_segment_version_support() {
+  project_dir=$1
+  helper_kind=$2
+  target_version=$3
+  properties_path="$project_dir/gradle/wrapper/gradle-wrapper.properties"
+  jar_path="$project_dir/gradle/wrapper/gradle-wrapper.jar"
+
+  log "exercising $helper_kind helper two-segment Gradle version support in '$project_dir' for Gradle '$target_version'"
+  set_wrapper_property "$properties_path" distributionUrl "https\://services.gradle.org/distributions/gradle-$target_version-bin.zip"
+  rm -f "$jar_path" "$project_dir/gradle/wrapper/gradle-wrapper-$target_version.sha256" "$project_dir/gradle/wrapper/gradle-wrapper-$target_version.asc"
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_succeeded "$helper_kind helper did not support the two-segment Gradle version '$target_version'."
+  assert_metadata_for_version "$project_dir" "$target_version"
+}
+
+exercise_posix_helper_init_script_deduplication() {
+  project_dir=$1
+  init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+
+  log "exercising POSIX helper init-script deduplication in '$project_dir'"
+
+  run_posix_helper_direct_capture_args "$project_dir" --init-script "$init_script_path" --stacktrace
+  assert_last_command_succeeded 'POSIX helper failed while checking --init-script <path> deduplication.'
+  assert_last_output_exact_line_count '--init-script' 1 'POSIX helper duplicated the split --init-script flag.'
+  assert_last_output_exact_line_count "$init_script_path" 1 'POSIX helper duplicated the split init-script path.'
+
+  run_posix_helper_direct_capture_args "$project_dir" -I "$init_script_path" --stacktrace
+  assert_last_command_succeeded 'POSIX helper failed while checking -I <path> deduplication.'
+  assert_last_output_exact_line_count '-I' 1 'POSIX helper duplicated the split -I flag.'
+  assert_last_output_exact_line_count "$init_script_path" 1 'POSIX helper duplicated the split -I init-script path.'
+
+  run_posix_helper_direct_capture_args "$project_dir" "--init-script=$init_script_path" --stacktrace
+  assert_last_command_succeeded 'POSIX helper failed while checking --init-script=<path> deduplication.'
+  assert_last_output_exact_line_count "--init-script=$init_script_path" 1 'POSIX helper duplicated the compact --init-script=<path> argument.'
+
+  run_posix_helper_direct_capture_args "$project_dir" "-I$init_script_path" --stacktrace
+  assert_last_command_succeeded 'POSIX helper failed while checking -I<path> deduplication.'
+  assert_last_output_exact_line_count "-I$init_script_path" 1 'POSIX helper duplicated the compact -I<path> argument.'
+}
+
+exercise_powershell_helper_init_script_output() {
+  project_dir=$1
+  init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+  expected_output="--init-script \"$init_script_path\""
+
+  log "exercising PowerShell helper init-script output in '$project_dir'"
+
+  run_powershell_helper_direct "$project_dir"
+  assert_last_command_succeeded 'PowerShell helper failed while checking init-script injection output.'
+  assert_last_output_equals "$expected_output" 'PowerShell helper did not quote the injected init-script path as expected.'
+
+  run_powershell_helper_direct "$project_dir" "--stacktrace --init-script \"$init_script_path\""
+  assert_last_command_succeeded 'PowerShell helper failed while checking init-script deduplication.'
+  assert_last_output_equals '' 'PowerShell helper should not emit a duplicate init-script argument when the caller already supplied it.'
+}
+
+exercise_init_script_warning_suppression() {
+  project_dir=$1
+
+  log "exercising init-script distributionSha256Sum warning suppression in '$project_dir'"
+  cat >> "$project_dir/build.gradle" <<'EOF'
+
+tasks.named('wrapper') {
+  distributionSha256Sum = 'a' * 64
+}
+EOF
+
+  run_gradle_with_init_script_capture "$project_dir" wrapper
+  assert_last_command_succeeded 'Init script unexpectedly failed when distributionSha256Sum was present.'
+  assert_last_output_not_contains 'Buildish helper warning:' 'Init script emitted the missing distributionSha256Sum warning even though the checksum was present.'
+  assert_launcher_patches "$project_dir"
+}
+
+exercise_init_script_idempotence() {
+  project_dir=$1
+  gradlew_path="$project_dir/gradlew"
+  gradlew_bat_path="$project_dir/gradlew.bat"
+
+  log "exercising init-script idempotence in '$project_dir'"
+  cat >> "$project_dir/build.gradle" <<'EOF'
+
+tasks.named('wrapper') {
+  doLast {
+    scriptFile.setText([
+      'APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf \'%s\\n\' "$PWD" ) || exit',
+      '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"',
+    ].join('\n'), 'UTF-8')
+    batchScript.setText([
+      'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi',
+      'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*',
+      'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=',
+      'for /f "delims=" %%a in (\'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\\gradle\\buildish-no-gradle-wrapper-jar.ps1"\') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a',
+      'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=',
+      'if errorlevel 1 goto fail',
+      '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*',
+    ].join('\r\n'), 'UTF-8')
+  }
+}
+
+gradle.taskGraph.whenReady {
+  def wrapperTask = tasks.named('wrapper').get()
+  def customAction = wrapperTask.actions.remove(wrapperTask.actions.size() - 1)
+  wrapperTask.actions.add(wrapperTask.actions.size() - 1, customAction)
+}
+EOF
+
+  run_gradle_with_init_script_capture "$project_dir" wrapper
+  assert_last_command_succeeded 'Init script unexpectedly duplicated an already patched launcher.'
+  assert_file_exact_line_count "$gradlew_path" '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' 1 'Init script duplicated the POSIX helper include in an already patched gradlew.'
+  assert_file_exact_line_count "$gradlew_bat_path" 'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*' 1 'Init script duplicated the batch helper block in an already patched gradlew.bat.'
+  assert_file_exact_line_count "$gradlew_bat_path" '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*' 1 'Init script duplicated the patched batch Java invocation line.'
+}
+
+exercise_init_script_newline_preservation() {
+  project_dir=$1
+  gradlew_path="$project_dir/gradlew"
+  gradlew_bat_path="$project_dir/gradlew.bat"
+
+  log "exercising init-script newline preservation and no-trailing-newline patching in '$project_dir'"
+  cat >> "$project_dir/build.gradle" <<'EOF'
+
+tasks.named('wrapper') {
+  doLast {
+    scriptFile.setText('APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf \'%s\\n\' "$PWD" ) || exit', 'UTF-8')
+    batchScript.setText([
+      'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi',
+      '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar" %*',
+    ].join('\r\n'), 'UTF-8')
+  }
+}
+
+gradle.taskGraph.whenReady {
+  def wrapperTask = tasks.named('wrapper').get()
+  def customAction = wrapperTask.actions.remove(wrapperTask.actions.size() - 1)
+  wrapperTask.actions.add(wrapperTask.actions.size() - 1, customAction)
+}
+EOF
+
+  run_gradle_with_init_script_capture "$project_dir" wrapper
+  assert_last_command_succeeded 'Init script failed to patch launcher files that lacked a trailing newline.'
+  assert_launcher_patches "$project_dir"
+  assert_file_newline_shape "$gradlew_path" lf no 'Init script did not preserve LF newline style without adding a trailing newline to gradlew.'
+  assert_file_newline_shape "$gradlew_bat_path" crlf no 'Init script did not preserve CRLF newline style without adding a trailing newline to gradlew.bat.'
+}
+
+exercise_init_script_gradlew_anchor_failure() {
+  project_dir=$1
+
+  log "exercising init-script unsupported gradlew anchor failure in '$project_dir'"
+  cat >> "$project_dir/build.gradle" <<'EOF'
+
+tasks.named('wrapper') {
+  doLast {
+    scriptFile.setText('unsupported-gradlew-anchor', 'UTF-8')
+    batchScript.setText([
+      'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi',
+      '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar" %*',
+    ].join('\r\n'), 'UTF-8')
+  }
+}
+
+gradle.taskGraph.whenReady {
+  def wrapperTask = tasks.named('wrapper').get()
+  def customAction = wrapperTask.actions.remove(wrapperTask.actions.size() - 1)
+  wrapperTask.actions.add(wrapperTask.actions.size() - 1, customAction)
+}
+EOF
+
+  run_gradle_with_init_script_capture "$project_dir" wrapper
+  assert_last_command_failed 'Init script unexpectedly accepted an unsupported gradlew anchor.'
+  assert_last_output_contains 'Unable to find the expected insertion point in gradlew' 'Init script failure output did not mention the unsupported gradlew anchor.'
+}
+
+exercise_init_script_gradlew_bat_replacement_failure() {
+  project_dir=$1
+
+  log "exercising init-script unsupported gradlew.bat execute-line failure in '$project_dir'"
+  cat >> "$project_dir/build.gradle" <<'EOF'
+
+tasks.named('wrapper') {
+  doLast {
+    scriptFile.setText('APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf \'%s\\n\' "$PWD" ) || exit', 'UTF-8')
+    batchScript.setText([
+      'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi',
+      'unsupported-gradlew-bat-execute-line',
+    ].join('\r\n'), 'UTF-8')
+  }
+}
+
+gradle.taskGraph.whenReady {
+  def wrapperTask = tasks.named('wrapper').get()
+  def customAction = wrapperTask.actions.remove(wrapperTask.actions.size() - 1)
+  wrapperTask.actions.add(wrapperTask.actions.size() - 1, customAction)
+}
+EOF
+
+  run_gradle_with_init_script_capture "$project_dir" wrapper
+  assert_last_command_failed 'Init script unexpectedly accepted an unsupported gradlew.bat execute line.'
+  assert_last_output_contains 'Unable to find the expected replacement point in gradlew.bat' 'Init script failure output did not mention the unsupported gradlew.bat execute line.'
+}
+
+run_init_script_focused_suite() {
+  test_root=$1
+  base_project="$test_root/init-script-base"
+  scenario_root="$test_root/init-script-focused"
+
+  log "starting focused init-script suite (base_project='$base_project')"
+  gradle_init_fixture "$base_project"
+
+  copy_init_script_fixture "$base_project" "$scenario_root/warning-suppression"
+  exercise_init_script_warning_suppression "$scenario_root/warning-suppression"
+
+  copy_init_script_fixture "$base_project" "$scenario_root/idempotence"
+  exercise_init_script_idempotence "$scenario_root/idempotence"
+
+  copy_init_script_fixture "$base_project" "$scenario_root/newline-preservation"
+  exercise_init_script_newline_preservation "$scenario_root/newline-preservation"
+
+  copy_init_script_fixture "$base_project" "$scenario_root/unsupported-gradlew-anchor"
+  exercise_init_script_gradlew_anchor_failure "$scenario_root/unsupported-gradlew-anchor"
+
+  copy_init_script_fixture "$base_project" "$scenario_root/unsupported-gradlew-bat-replacement"
+  exercise_init_script_gradlew_bat_replacement_failure "$scenario_root/unsupported-gradlew-bat-replacement"
 }
 
 exercise_wrapper_update_to_version() {
@@ -411,8 +832,72 @@ run_powershell_installer_flow() {
   installed_version=$(extract_gradle_version "$project_dir")
   [ -n "$installed_version" ] || fail 'unable to extract the installed Gradle version after install.ps1.'
   assert_metadata_for_version "$project_dir" "$installed_version"
-  exercise_helper_recovery_scenario "$project_dir" "$installed_version" powershell
-  exercise_helper_invalid_distribution_failure "$project_dir" powershell
+}
+
+run_helper_edge_case_suite() {
+  test_root=$1
+  posix_base_project=$2
+  powershell_base_project=$3
+  scenario_root="$test_root/helper-edge-cases"
+  posix_version=$(extract_gradle_version "$posix_base_project")
+  powershell_version=$(extract_gradle_version "$powershell_base_project")
+
+  [ -n "$posix_version" ] || fail 'unable to extract the installed Gradle version for the POSIX helper edge-case suite.'
+  [ -n "$powershell_version" ] || fail 'unable to extract the installed Gradle version for the PowerShell helper edge-case suite.'
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-corrupted-jar-cached-metadata"
+  exercise_helper_recovery_with_cached_metadata "$scenario_root/posix-corrupted-jar-cached-metadata" "$posix_version" posix
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-corrupted-jar-missing-metadata"
+  exercise_helper_recovery_scenario "$scenario_root/posix-corrupted-jar-missing-metadata" "$posix_version" posix
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-invalid-distribution-url"
+  exercise_helper_invalid_distribution_failure "$scenario_root/posix-invalid-distribution-url" posix
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-malformed-sha256"
+  exercise_helper_malformed_metadata_recovery "$scenario_root/posix-malformed-sha256" "$posix_version" posix sha256
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-malformed-asc"
+  exercise_helper_malformed_metadata_recovery "$scenario_root/posix-malformed-asc" "$posix_version" posix asc
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-properties"
+  exercise_helper_missing_properties_failure "$scenario_root/posix-missing-properties" posix
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-distribution-url"
+  exercise_helper_missing_distribution_url_failure "$scenario_root/posix-missing-distribution-url" posix
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-two-segment-version"
+  exercise_helper_two_segment_version_support "$scenario_root/posix-two-segment-version" posix "$TWO_SEGMENT_GRADLE_VERSION"
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-init-script-dedup"
+  exercise_posix_helper_init_script_deduplication "$scenario_root/posix-init-script-dedup"
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-corrupted-jar-cached-metadata"
+  exercise_helper_recovery_with_cached_metadata "$scenario_root/powershell-corrupted-jar-cached-metadata" "$powershell_version" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-corrupted-jar-missing-metadata"
+  exercise_helper_recovery_scenario "$scenario_root/powershell-corrupted-jar-missing-metadata" "$powershell_version" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-invalid-distribution-url"
+  exercise_helper_invalid_distribution_failure "$scenario_root/powershell-invalid-distribution-url" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-malformed-sha256"
+  exercise_helper_malformed_metadata_recovery "$scenario_root/powershell-malformed-sha256" "$powershell_version" powershell sha256
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-malformed-asc"
+  exercise_helper_malformed_metadata_recovery "$scenario_root/powershell-malformed-asc" "$powershell_version" powershell asc
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-properties"
+  exercise_helper_missing_properties_failure "$scenario_root/powershell-missing-properties" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-distribution-url"
+  exercise_helper_missing_distribution_url_failure "$scenario_root/powershell-missing-distribution-url" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-two-segment-version"
+  exercise_helper_two_segment_version_support "$scenario_root/powershell-two-segment-version" powershell "$TWO_SEGMENT_GRADLE_VERSION"
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell helper with spaces"
+  exercise_powershell_helper_init_script_output "$scenario_root/powershell helper with spaces"
 }
 
 run_default_integration_suite() {
@@ -424,8 +909,8 @@ run_default_integration_suite() {
   log "starting default integration suite (test_root='$test_root')"
   exercise_wrapper_update_to_version "$test_root/posix-installer" '' "$UPDATED_GRADLE_VERSION"
   run_powershell_installer_flow "$test_root/powershell-installer"
-  exercise_helper_recovery_scenario "$test_root/posix-installer" "$(extract_gradle_version "$test_root/posix-installer")" posix
-  exercise_helper_invalid_distribution_failure "$test_root/posix-installer" posix
+  run_helper_edge_case_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
+  run_init_script_focused_suite "$test_root"
   exercise_installer_missing_properties_failure "$test_root/posix-installer-missing-properties" posix
   exercise_installer_missing_properties_failure "$test_root/powershell-installer-missing-properties" powershell
   log 'all helper-tool integration checks passed.'
