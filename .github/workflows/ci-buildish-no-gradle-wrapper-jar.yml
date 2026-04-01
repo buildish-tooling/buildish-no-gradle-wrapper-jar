@@ -31,8 +31,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  integration-test:
-    name: Helper integration test
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -64,3 +64,76 @@ jobs:
 
       - name: Run default helper integration suite
         run: make test
+
+      - name: Apache RAT check
+        run: sh scripts/rat-check.sh
+
+  codeql:
+    name: CodeQL
+    if: github.repository_owner == 'apache'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3.35.1
+        with:
+          languages: kotlin
+          build-mode: none
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3.35.1
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        with:
+          advanced-security: false
+
+  required_checks:
+    name: Required Checks
+    if: ${{ always() }}
+    needs:
+      - check
+      - codeql
+      - zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert all required jobs succeeded or were intentionally skipped
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+          CODEQL_RESULT: ${{ needs.codeql.result }}
+          ZIZMOR_RESULT: ${{ needs.zizmor.result }}
+        run: |
+          for result in \
+            "$CHECK_RESULT" \
+            "$CODEQL_RESULT" \
+            "$ZIZMOR_RESULT"; do
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "Unexpected dependency result: $result"
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "All required jobs succeeded for this event."
