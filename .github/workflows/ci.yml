@@ -115,20 +115,40 @@ jobs:
             throw "Expected only Git for Windows GPG before native GnuPG installation, but found: $($nonGitGpgCommands.Source -join ', ')"
           }
 
+      - name: Check gpg command and version
+        run: |
+          Get-Command gpg -All
+          gpg --version
+
       - name: Verify Git-for-Windows GPG rejection path
         shell: pwsh
         run: |
           pwsh -NoLogo -NoProfile -File tests/windows-git-gpg-rejection.ps1
 
-      - name: Install native GnuPG
-        shell: pwsh
+      - name: Install GnuPG
+        # This is a quick way to get the gpg.exe we need for verification to work.
+        # The usual Windows install approaches are way too slow for CI.
         run: |
-          choco install gnupg --no-progress -y
-          foreach ($candidate in @('C:\Program Files\GnuPG\bin', 'C:\Program Files (x86)\GnuPG\bin')) {
-            if (Test-Path -LiteralPath $candidate -PathType Container) {
-              Add-Content -Path $env:GITHUB_PATH -Value $candidate
-            }
-          }
+          # 1. Download the installer (5MB)
+          $url = "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.18_20260224.exe"
+          Write-Host "Downloading $url"
+          curl.exe -L -o gpg-install.exe $url
+
+          # 2. Extract it, this bypasses all the registry/service/hanging logic
+          Write-Host "Extracting ..."
+          7z x gpg-install.exe -o"C:\gnupg_raw" -y
+
+          # 3. Find gpg.exe and add to PATH
+          Write-Host "Resolving ..."
+          $binPath = Resolve-Path "C:\gnupg_raw\bin" | Select-Object -ExpandProperty Path
+          echo "$binPath" >> $env:GITHUB_PATH
+
+          Write-Host "GPG unpacked to $binPath"
+
+      - name: Check gpg command and version
+        run: |
+          Get-Command gpg -All
+          gpg --version
 
       - name: Verify required toolchain
         shell: pwsh
