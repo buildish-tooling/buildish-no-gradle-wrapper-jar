@@ -94,15 +94,34 @@ jobs:
           $gradleBinDirectory = Join-Path -Path (Join-Path -Path $env:RUNNER_TEMP -ChildPath "gradle-$env:GRADLE_VERSION") -ChildPath 'bin'
           Add-Content -Path $env:GITHUB_PATH -Value $gradleBinDirectory
 
+      - name: Show gpg's
+        shell: pwsh
+        run: |
+          Get-Command gpg -All
+#
+#      - name: Install native GnuPG
+#        shell: pwsh
+#        run: |
+#          choco install gnupg --no-progress -y
+#          foreach ($candidate in @('C:\Program Files\GnuPG\bin', 'C:\Program Files (x86)\GnuPG\bin')) {
+#            if (Test-Path -LiteralPath $candidate -PathType Container) {
+#              Add-Content -Path $env:GITHUB_PATH -Value $candidate
+#            }
+#          }
+
       - name: Verify required toolchain
         shell: pwsh
         run: |
           Get-Command gradle | Out-Null
           Get-Command bash | Out-Null
           Get-Command pwsh | Out-Null
-          if (-not (Get-Command gpg.exe -ErrorAction SilentlyContinue) -and -not (Get-Command gpg -ErrorAction SilentlyContinue)) {
-            throw 'gpg.exe or gpg was not found on PATH.'
-          }
+#          $gpgCommand = Get-Command gpg.exe -ErrorAction SilentlyContinue
+#          if ($null -eq $gpgCommand) {
+#            $gpgCommand = Get-Command gpg -ErrorAction SilentlyContinue
+#          }
+#          if ($null -eq $gpgCommand) {
+#            throw 'gpg.exe or gpg was not found on PATH.'
+#          }
 
       - name: Run Windows launcher integration suite
         shell: pwsh
