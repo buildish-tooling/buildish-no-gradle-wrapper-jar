@@ -110,12 +110,11 @@ f7TkwC6aybc=
 -----END PGP PUBLIC KEY BLOCK-----
 '@
 
-# Locate the first available command from a preference-ordered name list. This is
-# primarily used to find `gpg.exe` / `gpg` without assuming a specific filename.
-function Get-BuildishNoGradleWrapperJarCommandPath {
-  param([string[]]$Names)
-
-  foreach ($name in $Names) {
+# Prefer a native `gpg.exe` when available and fall back to `gpg` otherwise.
+# The Windows integration path should avoid a hard dependency on one exact
+# filename, but preferring `gpg.exe` keeps command selection deterministic.
+function Get-BuildishNoGradleWrapperJarGpgCommandPath {
+  foreach ($name in @('gpg.exe', 'gpg')) {
     $command = Get-Command $name -ErrorAction SilentlyContinue
     if ($null -ne $command) {
       return $command.Source
@@ -416,7 +415,10 @@ function Invoke-BuildishNoGradleWrapperJarGpg {
   $stderrPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-stderr-$([System.Guid]::NewGuid()).txt"
 
   try {
-    $process = Start-Process -FilePath $GpgCommand -ArgumentList (@('--homedir', $GpgHome, '--batch', '--no-options') + $Arguments) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    # The helper only performs public-key inspection and detached-signature
+    # verification; it never needs secret-key or pinentry flows. Disable agent
+    # auto-start so mismatched Windows/MSYS agent shims do not break verification.
+    $process = Start-Process -FilePath $GpgCommand -ArgumentList (@('--homedir', $GpgHome, '--batch', '--no-options', '--no-autostart') + $Arguments) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
     $stdout = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
     $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
     $output = ($stdout, $stderr | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join ''
@@ -488,9 +490,9 @@ try {
 
   # Detached-signature verification is mandatory; if GnuPG is unavailable the
   # helper must fail closed rather than silently trusting downloaded bytes.
-  $GpgCommand = Get-BuildishNoGradleWrapperJarCommandPath -Names @('gpg.exe', 'gpg')
+  $GpgCommand = Get-BuildishNoGradleWrapperJarGpgCommandPath
   if ([string]::IsNullOrWhiteSpace($GpgCommand)) {
-    throw "GnuPG command 'gpg.exe' is required for Gradle wrapper detached-signature verification but was not found on PATH."
+    throw "A GnuPG command ('gpg.exe' preferred, otherwise 'gpg') is required for Gradle wrapper detached-signature verification but was not found on PATH."
   }
 
   # All paths are project-local and derived from the existing Gradle launcher

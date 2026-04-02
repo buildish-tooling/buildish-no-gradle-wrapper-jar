@@ -74,14 +74,6 @@ assert_last_output_contains() {
   printf '%s' "$CAPTURED_OUTPUT" | grep -Fq "$expected_text" || fail "$failure_message (output=$CAPTURED_OUTPUT)"
 }
 
-assert_last_output_contains_collapsed_whitespace() {
-  expected_text=$1
-  failure_message=$2
-  normalized_expected=$(printf '%s' "$expected_text" | tr '\n\r|' '   ' | tr -s '[:space:]' ' ')
-  normalized_output=$(printf '%s' "$CAPTURED_OUTPUT" | tr '\n\r|' '   ' | tr -s '[:space:]' ' ')
-  printf '%s' "$normalized_output" | grep -Fq "$normalized_expected" || fail "$failure_message (output=$CAPTURED_OUTPUT)"
-}
-
 assert_last_output_not_contains() {
   unexpected_text=$1
   failure_message=$2
