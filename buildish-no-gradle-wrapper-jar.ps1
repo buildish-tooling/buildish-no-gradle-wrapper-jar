@@ -55,6 +55,7 @@ function Import-BuildishNoGradleWrapperJarHttpClientTypes {
 $TrustedGradleKeyFingerprint = '1bd97a6a154e7810ee0bc832e2f38302c8075e3d'
 $BuildishMetadataMaxBytes = 64KB
 $BuildishWrapperJarMaxBytes = 10MB
+$BuildishIsWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 $TrustedGradlePublicKey = @'
 -----BEGIN PGP PUBLIC KEY BLOCK-----
 
@@ -128,7 +129,7 @@ function Test-BuildishNoGradleWrapperJarWindowsGitGpgPath {
 function New-BuildishNoGradleWrapperJarGpgWorkspaceDirectory {
   param([string]$GpgCommand)
 
-  $directoryNamePrefix = if ($IsWindows -and (Test-BuildishNoGradleWrapperJarWindowsGitGpgPath -CommandPath $GpgCommand)) { 'bngpg-' } else { 'buildish-no-gradle-wrapper-jar-gpg-' }
+  $directoryNamePrefix = if ($BuildishIsWindows -and (Test-BuildishNoGradleWrapperJarWindowsGitGpgPath -CommandPath $GpgCommand)) { 'bngpg-' } else { 'buildish-no-gradle-wrapper-jar-gpg-' }
   $directoryNameSuffix = if ($directoryNamePrefix -eq 'bngpg-') { [System.Guid]::NewGuid().ToString('N').Substring(0, 12) } else { [System.Guid]::NewGuid() }
   return Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "$directoryNamePrefix$directoryNameSuffix"
 }
@@ -179,7 +180,7 @@ function Get-BuildishNoGradleWrapperJarGpgCommandPath {
       }
 
       $commandPath = $command.Source
-      if ($IsWindows -and (Test-BuildishNoGradleWrapperJarWindowsGitGpgPath -CommandPath $commandPath)) {
+      if ($BuildishIsWindows -and (Test-BuildishNoGradleWrapperJarWindowsGitGpgPath -CommandPath $commandPath)) {
         try {
           if (Test-BuildishNoGradleWrapperJarGitGpgProbe -GpgCommand $commandPath) {
             return $commandPath
@@ -197,7 +198,7 @@ function Get-BuildishNoGradleWrapperJarGpgCommandPath {
   }
 
 
-  if ($IsWindows -and -not [string]::IsNullOrWhiteSpace($gitGpgProbeFailure)) {
+  if ($BuildishIsWindows -and -not [string]::IsNullOrWhiteSpace($gitGpgProbeFailure)) {
     throw "Found Git for Windows GnuPG on PATH, but its isolated-home probe failed: $gitGpgProbeFailure"
   }
 
