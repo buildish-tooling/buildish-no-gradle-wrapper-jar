@@ -530,13 +530,13 @@ run_gradle_with_init_script_capture() {
 run_posix_installer_capture() {
   project_dir=$1
   log "installing POSIX helper into '$project_dir'"
-  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR="$TOOL_DIR" sh "$TOOL_DIR/install.sh" "$project_dir"
+  run_and_capture sh "$TOOL_DIR/install.sh" --source-dir "$TOOL_DIR" "$project_dir"
 }
 
 run_powershell_installer_capture() {
   project_dir=$1
   log "installing PowerShell helper into '$project_dir'"
-  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR="$TOOL_DIR" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
+  run_and_capture pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" --source-dir "$TOOL_DIR" "$project_dir"
 }
 
 run_posix_installer_capture_with_base_url() {

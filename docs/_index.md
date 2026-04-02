@@ -66,10 +66,9 @@ The `curl | bash` and `Invoke-RestMethod | Invoke-Expression` forms execute remo
 Prefer pinning to a reviewed tag or commit, or download the installer first and inspect it before
 execution if your environment requires stricter supply-chain controls.
 
-For trusted local development and integration testing, set
-`BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR` to a checked-out
-`tools/buildish-no-gradle-wrapper-jar/` directory to copy helper files from disk instead of
-downloading them from GitHub.
+For trusted local development and integration testing, pass `--source-dir <path>` to point the
+installer at a checked-out `tools/buildish-no-gradle-wrapper-jar/` directory and copy helper
+files from disk instead of downloading them from GitHub.
 
 ## Files in this blueprint
 

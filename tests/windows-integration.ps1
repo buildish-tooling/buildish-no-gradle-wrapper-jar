@@ -136,14 +136,9 @@ try {
     & gradle -p $projectDirectory init --dsl groovy --type java-library --use-defaults --no-daemon
   }
 
-  $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR = $ToolDirectory
-  try {
-    Write-BuildishWindowsTestLog "installing helper into '$projectDirectory'"
-    Invoke-BuildishExternal -Label 'install.ps1' -Command {
-      & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') $projectDirectory
-    }
-  } finally {
-    Remove-Item Env:BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR -ErrorAction SilentlyContinue
+  Write-BuildishWindowsTestLog "installing helper into '$projectDirectory'"
+  Invoke-BuildishExternal -Label 'install.ps1' -Command {
+    & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --source-dir $ToolDirectory $projectDirectory
   }
 
   if (Test-Path -LiteralPath $wrapperJarPath) {

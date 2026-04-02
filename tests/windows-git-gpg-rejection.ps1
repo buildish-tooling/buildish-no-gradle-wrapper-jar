@@ -73,14 +73,9 @@ try {
       throw "gradle init failed with exit code $LASTEXITCODE."
     }
 
-    $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR = $ToolDirectory
-    try {
-      & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') $projectDirectory
-      if ($LASTEXITCODE -ne 0) {
-        throw "install.ps1 failed with exit code $LASTEXITCODE."
-      }
-    } finally {
-      Remove-Item Env:BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR -ErrorAction SilentlyContinue
+    & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --source-dir $ToolDirectory $projectDirectory
+    if ($LASTEXITCODE -ne 0) {
+      throw "install.ps1 failed with exit code $LASTEXITCODE."
     }
 
     if (Test-Path -LiteralPath $wrapperJarPath) {

@@ -72,18 +72,22 @@ Affected files:
 - `install.sh`
 - `install.ps1`
 
-The installers download helper files from:
+The installers currently download helper files from:
 
 - `https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/...`
 
 Those downloads are not verified with a checksum, detached signature, or release
 archive signature.
 
+> [!NOTE]
+> The installation method will be hardened with the first release of this component.
+> See [`release-work.md`](./release-work.md) for details.
+
 Impact:
 
 - If the bootstrap download source is compromised, or if the caller intentionally or
-  accidentally points `BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL` at an untrusted
-  origin, attacker-controlled helper code can be installed.
+  accidentally points `--source-dir` at an untrusted origin, attacker-controlled helper
+  code can be installed.
 - That helper code is then executed automatically by `gradlew` / `gradlew.bat`.
 - Successful exploitation would allow arbitrary code execution and therefore secret
   or credential theft in the current user or CI job context.
@@ -98,8 +102,8 @@ Recommendation:
 
 - Distribute a signed release artifact or a checksummed release bundle and make the
   installers verify it before staging files.
-- Treat `BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL` and
-  `BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR` as trusted-development-only inputs.
+- Treat `--source-dir` as a trusted-development-only flag; it bypasses the download path
+  and installs files directly from a local directory without additional verification.
 
 ### 2. Low: CI installs Gradle over HTTPS without checksum verification
 

@@ -30,15 +30,14 @@ set -eu
 # Security / safety properties:
 #   * existing symlinks are rejected instead of being followed
 #   * file updates go through temporary files and atomic moves where possible
-#   * a trusted local source directory can be used in tests instead of downloading
-#     helper files from GitHub
+#   * a trusted local source directory can be supplied via --source-dir for tests
+#     instead of downloading helper files from GitHub
 
 BUILDISH_TOOL_NAME='buildish-no-gradle-wrapper-jar'
 BUILDISH_DEFAULT_BASE_URL='https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
 BUILDISH_BASE_URL=${BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL:-$BUILDISH_DEFAULT_BASE_URL}
-BUILDISH_SOURCE_DIR=${BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR:-}
+BUILDISH_SOURCE_DIR=''
 BUILDISH_CR=$(printf '\r')
-TARGET_DIR=${1:-.}
 BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES=262144
 
 # Consistent installer failure prefix.
@@ -416,7 +415,33 @@ buildish_install_require_command curl
 buildish_install_require_command mktemp
 
 # Installer entrypoint validation and derived paths.
+# Parse --source-dir option and the optional positional target-directory argument.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --source-dir)
+      [ "$#" -ge 2 ] || buildish_install_fail '--source-dir requires a path argument.'
+      BUILDISH_SOURCE_DIR=$2
+      shift 2
+      ;;
+    --source-dir=*)
+      BUILDISH_SOURCE_DIR=${1#--source-dir=}
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      buildish_install_fail "Unknown option '$1'."
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 [ "$#" -le 1 ] || buildish_install_fail 'Expected zero or one positional argument: the target project directory.'
+TARGET_DIR=${1:-.}
 [ -d "$TARGET_DIR" ] || buildish_install_fail "Target directory does not exist: '$TARGET_DIR'."
 
 TARGET_DIR_ABSOLUTE=$(cd "$TARGET_DIR" >/dev/null 2>&1 && pwd) ||

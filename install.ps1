@@ -28,8 +28,8 @@ contains the generated wrapper launchers and `gradle-wrapper.properties`. It the
 Safety properties:
   * symlinks / reparse points are rejected rather than followed
   * writes go through temporary files and atomic moves where possible
-  * integration tests can supply a trusted local source directory instead of
-    downloading helper files from GitHub
+  * a trusted local source directory can be supplied via --source-dir for tests
+    instead of downloading helper files from GitHub
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -38,9 +38,42 @@ $ProgressPreference = 'SilentlyContinue'
 $BuildishToolName = 'buildish-no-gradle-wrapper-jar'
 $DefaultBaseUrl = 'https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
 $BaseUrl = if ([string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL)) { $DefaultBaseUrl } else { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL }
-$SourceDirectory = $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_SOURCE_DIR
-$TargetDirectory = if ($args.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($args[0])) { $args[0] } elseif (-not [string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR)) { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR } else { (Get-Location).Path }
 $BuildishInstallMaxToolFileBytes = 256KB
+
+# Parse --source-dir option and the optional positional target-directory argument.
+$parsedSourceDirectory = ''
+$parsedPositionalArgs = [System.Collections.Generic.List[string]]::new()
+$parsedArgIndex = 0
+while ($parsedArgIndex -lt $args.Count) {
+  $parsedArg = $args[$parsedArgIndex]
+  if ($parsedArg -eq '--source-dir') {
+    if ($parsedArgIndex + 1 -ge $args.Count) {
+      Write-Error "$BuildishToolName install: --source-dir requires a path argument."
+      exit 1
+    }
+    $parsedSourceDirectory = $args[$parsedArgIndex + 1]
+    $parsedArgIndex += 2
+  } elseif ($parsedArg.StartsWith('--source-dir=')) {
+    $parsedSourceDirectory = $parsedArg.Substring('--source-dir='.Length)
+    $parsedArgIndex++
+  } elseif ($parsedArg -eq '--') {
+    $parsedArgIndex++
+    while ($parsedArgIndex -lt $args.Count) {
+      [void]$parsedPositionalArgs.Add($args[$parsedArgIndex])
+      $parsedArgIndex++
+    }
+    break
+  } elseif ($parsedArg.StartsWith('-')) {
+    Write-Error "$BuildishToolName install: Unknown option '$parsedArg'."
+    exit 1
+  } else {
+    [void]$parsedPositionalArgs.Add($parsedArg)
+    $parsedArgIndex++
+  }
+}
+
+$SourceDirectory = $parsedSourceDirectory
+$TargetDirectory = if ($parsedPositionalArgs.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($parsedPositionalArgs[0])) { $parsedPositionalArgs[0] } elseif (-not [string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR)) { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR } else { (Get-Location).Path }
 
 # Use UTF-8 without a BOM when rewriting launcher and text files so the output
 # remains stable and acceptable to Gradle / shell tooling.
@@ -401,7 +434,7 @@ function Update-BuildishGitignore {
 
 try {
   # Installer entrypoint validation and derived project-local paths.
-  if ($args.Count -gt 1) {
+  if ($parsedPositionalArgs.Count -gt 1) {
     throw 'Expected zero or one positional argument: the target project directory.'
   }
   if (-not (Test-Path -LiteralPath $TargetDirectory -PathType Container)) {
