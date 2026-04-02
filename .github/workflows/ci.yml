@@ -100,25 +100,24 @@ jobs:
           Get-Command gradle | Out-Null
           Get-Command bash | Out-Null
           Get-Command pwsh | Out-Null
-          $gitGpgCommand = Get-Command gpg.exe -All -ErrorAction SilentlyContinue | Where-Object { $_.Source.Replace('/', '\').ToLowerInvariant().Contains('\git\') } | Select-Object -First 1
-          if ($null -eq $gitGpgCommand) {
-            throw 'Git for Windows gpg.exe was not found on PATH.'
+          $gpgCommands = @(
+            @(Get-Command gpg.exe -All -ErrorAction SilentlyContinue)
+            @(Get-Command gpg -All -ErrorAction SilentlyContinue)
+          ) | Where-Object { $null -ne $_ } | Sort-Object -Property Source -Unique
+          if ($gpgCommands.Count -eq 0) {
+            throw 'gpg.exe or gpg was not found on PATH.'
+          }
+          $nonGitGpgCommands = @($gpgCommands | Where-Object {
+            $normalizedPath = $_.Source.Replace('/', '\').ToLowerInvariant()
+            (-not $normalizedPath.Contains('\git\usr\bin\')) -and (-not $normalizedPath.Contains('\git\mingw64\bin\'))
+          })
+          if ($nonGitGpgCommands.Count -gt 0) {
+            throw "Expected only Git for Windows GPG before native GnuPG installation, but found: $($nonGitGpgCommands.Source -join ', ')"
           }
 
       - name: Verify Git-for-Windows GPG rejection path
         shell: pwsh
         run: |
-          $gitGpgCommand = Get-Command gpg.exe -All -ErrorAction SilentlyContinue | Where-Object { $_.Source.Replace('/', '\').ToLowerInvariant().Contains('\git\') } | Select-Object -First 1
-          if ($null -eq $gitGpgCommand) {
-            throw 'Git for Windows gpg.exe was not found on PATH.'
-          }
-          $gitGpgDirectory = Split-Path -Parent $gitGpgCommand.Source
-          $pathEntries = $env:PATH -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-          $filteredPathEntries = $pathEntries | Where-Object {
-            $normalizedPath = $_.Replace('/', '\').ToLowerInvariant()
-            (-not $normalizedPath.Contains('\gnupg\bin')) -and ($_ -ne $gitGpgDirectory)
-          }
-          $env:PATH = (($gitGpgDirectory) + $filteredPathEntries) -join ';'
           pwsh -NoLogo -NoProfile -File tests/windows-git-gpg-rejection.ps1
 
       - name: Install native GnuPG
