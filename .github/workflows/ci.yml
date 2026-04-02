@@ -94,20 +94,42 @@ jobs:
           $gradleBinDirectory = Join-Path -Path (Join-Path -Path $env:RUNNER_TEMP -ChildPath "gradle-$env:GRADLE_VERSION") -ChildPath 'bin'
           Add-Content -Path $env:GITHUB_PATH -Value $gradleBinDirectory
 
-      - name: Show gpg's
+      - name: Verify required baseline toolchain
         shell: pwsh
         run: |
-          Get-Command gpg -All
-#
-#      - name: Install native GnuPG
-#        shell: pwsh
-#        run: |
-#          choco install gnupg --no-progress -y
-#          foreach ($candidate in @('C:\Program Files\GnuPG\bin', 'C:\Program Files (x86)\GnuPG\bin')) {
-#            if (Test-Path -LiteralPath $candidate -PathType Container) {
-#              Add-Content -Path $env:GITHUB_PATH -Value $candidate
-#            }
-#          }
+          Get-Command gradle | Out-Null
+          Get-Command bash | Out-Null
+          Get-Command pwsh | Out-Null
+          $gitGpgCommand = Get-Command gpg.exe -All -ErrorAction SilentlyContinue | Where-Object { $_.Source.Replace('/', '\').ToLowerInvariant().Contains('\git\') } | Select-Object -First 1
+          if ($null -eq $gitGpgCommand) {
+            throw 'Git for Windows gpg.exe was not found on PATH.'
+          }
+
+      - name: Verify Git-for-Windows GPG rejection path
+        shell: pwsh
+        run: |
+          $gitGpgCommand = Get-Command gpg.exe -All -ErrorAction SilentlyContinue | Where-Object { $_.Source.Replace('/', '\').ToLowerInvariant().Contains('\git\') } | Select-Object -First 1
+          if ($null -eq $gitGpgCommand) {
+            throw 'Git for Windows gpg.exe was not found on PATH.'
+          }
+          $gitGpgDirectory = Split-Path -Parent $gitGpgCommand.Source
+          $pathEntries = $env:PATH -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          $filteredPathEntries = $pathEntries | Where-Object {
+            $normalizedPath = $_.Replace('/', '\').ToLowerInvariant()
+            (-not $normalizedPath.Contains('\gnupg\bin')) -and ($_ -ne $gitGpgDirectory)
+          }
+          $env:PATH = (($gitGpgDirectory) + $filteredPathEntries) -join ';'
+          pwsh -NoLogo -NoProfile -File tests/windows-git-gpg-rejection.ps1
+
+      - name: Install native GnuPG
+        shell: pwsh
+        run: |
+          choco install gnupg --no-progress -y
+          foreach ($candidate in @('C:\Program Files\GnuPG\bin', 'C:\Program Files (x86)\GnuPG\bin')) {
+            if (Test-Path -LiteralPath $candidate -PathType Container) {
+              Add-Content -Path $env:GITHUB_PATH -Value $candidate
+            }
+          }
 
       - name: Verify required toolchain
         shell: pwsh
@@ -115,18 +137,22 @@ jobs:
           Get-Command gradle | Out-Null
           Get-Command bash | Out-Null
           Get-Command pwsh | Out-Null
-#          $gpgCommand = Get-Command gpg.exe -ErrorAction SilentlyContinue
-#          if ($null -eq $gpgCommand) {
-#            $gpgCommand = Get-Command gpg -ErrorAction SilentlyContinue
-#          }
-#          if ($null -eq $gpgCommand) {
-#            throw 'gpg.exe or gpg was not found on PATH.'
-#          }
+          $gpgCommand = Get-Command gpg.exe -ErrorAction SilentlyContinue
+          if ($null -eq $gpgCommand) {
+            $gpgCommand = Get-Command gpg -ErrorAction SilentlyContinue
+          }
+          if ($null -eq $gpgCommand) {
+            throw 'gpg.exe or gpg was not found on PATH.'
+          }
+          if ($gpgCommand.Source.Replace('/', '\').ToLowerInvariant().Contains('\git\')) {
+            throw "Native Windows GnuPG was expected after installation, but Git for Windows GPG is still selected: $($gpgCommand.Source)"
+          }
 
       - name: Run Windows launcher integration suite
         shell: pwsh
         run: |
           pwsh -NoLogo -NoProfile -File tests/windows-integration.ps1
+
 
   codeql:
     name: CodeQL

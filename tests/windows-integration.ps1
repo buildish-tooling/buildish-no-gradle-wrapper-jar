@@ -19,7 +19,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $ToolDirectory = Split-Path -Parent $PSScriptRoot
 $BuildDirectory = Join-Path -Path $ToolDirectory -ChildPath 'build\tests'
-$TwoSegmentGradleVersion = if ([string]::IsNullOrWhiteSpace($env:TWO_SEGMENT_GRADLE_VERSION)) { '8.3' } else { $env:TWO_SEGMENT_GRADLE_VERSION }
+$TwoSegmentGradleVersion = if ([string]::IsNullOrWhiteSpace($env:TWO_SEGMENT_GRADLE_VERSION)) { '8.14' } else { $env:TWO_SEGMENT_GRADLE_VERSION }
 
 function Write-BuildishWindowsTestLog {
   param([string]$Message)

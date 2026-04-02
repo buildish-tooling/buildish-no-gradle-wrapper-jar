@@ -25,7 +25,7 @@ help: ## Show available Make targets.
 syntax-check: ## Verify shell syntax and PowerShell parseability for the helper tool files.
 	sh -n buildish-no-gradle-wrapper-jar.sh install.sh scripts/rat-check.sh
 	bash -n tests/integration.sh
-	pwsh -NoLogo -NoProfile -Command '$$files=@("buildish-no-gradle-wrapper-jar.ps1","install.ps1"); foreach($$file in $$files){ $$tokens=$$null; $$errors=$$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $$file), [ref]$$tokens, [ref]$$errors); if($$errors.Count -gt 0){ $$errors | ForEach-Object { $$_.ToString() }; exit 1 } }'
+	pwsh -NoLogo -NoProfile -Command '$$files=@("buildish-no-gradle-wrapper-jar.ps1","install.ps1","tests/windows-git-gpg-rejection.ps1","tests/windows-integration.ps1"); foreach($$file in $$files){ $$tokens=$$null; $$errors=$$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $$file), [ref]$$tokens, [ref]$$errors); if($$errors.Count -gt 0){ $$errors | ForEach-Object { $$_.ToString() }; exit 1 } }'
 
 test: syntax-check ## Run integration tests for the helper tool.
 	bash tests/integration.sh

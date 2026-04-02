@@ -112,9 +112,8 @@ f7TkwC6aybc=
 '@
 
 # Git for Windows ships an MSYS-flavoured GPG that can resolve agent helpers and
-# paths in Unix style (`/usr/bin/gpg-agent`). Prefer native `gpg.exe`, but allow
-# Git-for-Windows GPG on Windows if a short-home probe proves it works in the
-# same isolated-home flow used for detached-signature verification.
+# paths in Unix style (`/usr/bin/gpg-agent`). Reject it on Windows so detached-
+# signature verification only uses a native Windows GnuPG installation.
 function Test-BuildishNoGradleWrapperJarWindowsGitGpgPath {
   param([string]$CommandPath)
 
@@ -126,51 +125,8 @@ function Test-BuildishNoGradleWrapperJarWindowsGitGpgPath {
   return $normalizedPath.Contains('\git\usr\bin\') -or $normalizedPath.Contains('\git\mingw64\bin\')
 }
 
-function New-BuildishNoGradleWrapperJarGpgWorkspaceDirectory {
-  param([string]$GpgCommand)
-
-  $directoryNamePrefix = if ($BuildishIsWindows -and (Test-BuildishNoGradleWrapperJarWindowsGitGpgPath -CommandPath $GpgCommand)) { 'bngpg-' } else { 'buildish-no-gradle-wrapper-jar-gpg-' }
-  $directoryNameSuffix = if ($directoryNamePrefix -eq 'bngpg-') { [System.Guid]::NewGuid().ToString('N').Substring(0, 12) } else { [System.Guid]::NewGuid() }
-  return Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "$directoryNamePrefix$directoryNameSuffix"
-}
-
-function Test-BuildishNoGradleWrapperJarGitGpgProbe {
-  param([string]$GpgCommand)
-
-  $tempDirectory = New-BuildishNoGradleWrapperJarGpgWorkspaceDirectory -GpgCommand $GpgCommand
-  $gpgHomePath = Join-Path -Path $tempDirectory -ChildPath 'h'
-  $trustedKeyPath = Join-Path -Path $tempDirectory -ChildPath 'k.asc'
-  $locationPushed = $false
-
-  try {
-    New-Item -ItemType Directory -Path $gpgHomePath -Force | Out-Null
-    Write-BuildishNoGradleWrapperJarAsciiFile -Path $trustedKeyPath -Content $TrustedGradlePublicKey
-    Push-Location -LiteralPath $tempDirectory
-    $locationPushed = $true
-
-    $fingerprintOutput = Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'h' -Arguments @('--show-keys', '--with-colons', '--fingerprint', 'k.asc') -FailurePrefix 'Unable to inspect pinned Gradle signing key during Git GPG probe'
-    $fingerprintLine = ($fingerprintOutput -split "`r?`n" | Where-Object { $_.StartsWith('fpr:') } | Select-Object -First 1)
-    if ([string]::IsNullOrWhiteSpace($fingerprintLine)) {
-      throw 'Pinned Gradle signing key did not expose a primary fingerprint during Git GPG probe.'
-    }
-
-    $actualFingerprint = $fingerprintLine.Split(':')[9].ToLowerInvariant()
-    if ($actualFingerprint -ne $TrustedGradleKeyFingerprint) {
-      throw 'Pinned Gradle signing key fingerprint mismatch during Git GPG probe.'
-    }
-
-    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'h' -Arguments @('--import', 'k.asc') -FailurePrefix 'Unable to import pinned Gradle signing key during Git GPG probe')
-    return $true
-  } finally {
-    if ($locationPushed) {
-      Pop-Location
-    }
-    Remove-Item -LiteralPath $tempDirectory -Recurse -Force -ErrorAction SilentlyContinue
-  }
-}
-
 function Get-BuildishNoGradleWrapperJarGpgCommandPath {
-  $gitGpgProbeFailure = $null
+  $unsupportedGitGpgCommandPath = $null
 
   foreach ($name in @('gpg.exe', 'gpg')) {
     $commands = @(Get-Command $name -All -ErrorAction SilentlyContinue)
@@ -181,12 +137,8 @@ function Get-BuildishNoGradleWrapperJarGpgCommandPath {
 
       $commandPath = $command.Source
       if ($BuildishIsWindows -and (Test-BuildishNoGradleWrapperJarWindowsGitGpgPath -CommandPath $commandPath)) {
-        try {
-          if (Test-BuildishNoGradleWrapperJarGitGpgProbe -GpgCommand $commandPath) {
-            return $commandPath
-          }
-        } catch {
-          $gitGpgProbeFailure = $_.Exception.Message
+        if ([string]::IsNullOrWhiteSpace($unsupportedGitGpgCommandPath)) {
+          $unsupportedGitGpgCommandPath = $commandPath
         }
         continue
       }
@@ -197,9 +149,8 @@ function Get-BuildishNoGradleWrapperJarGpgCommandPath {
     }
   }
 
-
-  if ($BuildishIsWindows -and -not [string]::IsNullOrWhiteSpace($gitGpgProbeFailure)) {
-    throw "Found Git for Windows GnuPG on PATH, but its isolated-home probe failed: $gitGpgProbeFailure"
+  if ($BuildishIsWindows -and -not [string]::IsNullOrWhiteSpace($unsupportedGitGpgCommandPath)) {
+    throw "Unsupported Git for Windows GnuPG detected at '$unsupportedGitGpgCommandPath'. Git for Windows' bundled GPG is not supported for Gradle wrapper detached-signature verification in the Windows batch launcher. Install a native Windows GnuPG such as Gpg4win, Chocolatey ('choco install gnupg'), or Scoop ('scoop install gpg')."
   }
 
   return $null
@@ -523,11 +474,11 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
     [string]$GpgCommand
   )
 
-  $tempDirectory = New-BuildishNoGradleWrapperJarGpgWorkspaceDirectory -GpgCommand $GpgCommand
-  $gpgHome = Join-Path -Path $tempDirectory -ChildPath 'h'
-  $trustedKeyPath = Join-Path -Path $tempDirectory -ChildPath 'k.asc'
-  $localSignaturePath = Join-Path -Path $tempDirectory -ChildPath 's.asc'
-  $localPayloadPath = Join-Path -Path $tempDirectory -ChildPath 'p.jar'
+  $tempDirectory = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-$([System.Guid]::NewGuid())"
+  $gpgHome = Join-Path -Path $tempDirectory -ChildPath 'home'
+  $trustedKeyPath = Join-Path -Path $tempDirectory -ChildPath 'gradle-trusted-key.asc'
+  $localSignaturePath = Join-Path -Path $tempDirectory -ChildPath 'payload.asc'
+  $localPayloadPath = Join-Path -Path $tempDirectory -ChildPath 'payload.jar'
   $locationPushed = $false
 
   try {
@@ -542,7 +493,7 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
     Push-Location -LiteralPath $tempDirectory
     $locationPushed = $true
 
-    $fingerprintOutput = Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'h' -Arguments @('--show-keys', '--with-colons', '--fingerprint', 'k.asc') -FailurePrefix 'Unable to inspect pinned Gradle signing key'
+    $fingerprintOutput = Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'home' -Arguments @('--show-keys', '--with-colons', '--fingerprint', 'gradle-trusted-key.asc') -FailurePrefix 'Unable to inspect pinned Gradle signing key'
 
     $fingerprintLine = ($fingerprintOutput -split "`r?`n" | Where-Object { $_.StartsWith('fpr:') } | Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($fingerprintLine)) {
@@ -554,8 +505,8 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
       throw 'Pinned Gradle signing key fingerprint mismatch.'
     }
 
-    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'h' -Arguments @('--import', 'k.asc') -FailurePrefix 'Unable to import pinned Gradle signing key')
-    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'h' -Arguments @('--no-auto-key-retrieve', '--verify', 's.asc', 'p.jar') -FailurePrefix 'Detached signature verification failed')
+    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'home' -Arguments @('--import', 'gradle-trusted-key.asc') -FailurePrefix 'Unable to import pinned Gradle signing key')
+    [void](Invoke-BuildishNoGradleWrapperJarGpg -GpgCommand $GpgCommand -GpgHome 'home' -Arguments @('--no-auto-key-retrieve', '--verify', 'payload.asc', 'payload.jar') -FailurePrefix 'Detached signature verification failed')
   } finally {
     if ($locationPushed) {
       Pop-Location
