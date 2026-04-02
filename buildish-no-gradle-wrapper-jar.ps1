@@ -414,6 +414,10 @@ function Invoke-BuildishNoGradleWrapperJarGpg {
   $stdoutPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-stdout-$([System.Guid]::NewGuid()).txt"
   $stderrPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-stderr-$([System.Guid]::NewGuid()).txt"
 
+  [Console]::Error.WriteLine("STDOUT $stdoutPath")
+  [Console]::Error.WriteLine("STDERR $stderrPath")
+  [Console]::Error.WriteLine("GPG HOME $GpgHome")
+
   try {
     # The helper only performs public-key inspection and detached-signature
     # verification; it never needs secret-key or pinentry flows. Disable agent
@@ -422,8 +426,10 @@ function Invoke-BuildishNoGradleWrapperJarGpg {
     $stdout = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
     $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
     $output = ($stdout, $stderr | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join ''
-    if ($process.ExitCode -ne 0) {
-      throw "${FailurePrefix}: $output"
+    $exitCode = $process.ExitCode
+    if ($exitCode -ne 0) {
+      [Console]::Error.WriteLine("${FailurePrefix}: ($exitCode) $output")
+      throw "${FailurePrefix}: ($exitCode) $output"
     }
     return $output
   } finally {
@@ -447,6 +453,11 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
   $localSignaturePath = Join-Path -Path $tempDirectory -ChildPath 'payload.asc'
   $localPayloadPath = Join-Path -Path $tempDirectory -ChildPath 'payload.jar'
   $locationPushed = $false
+
+  [Console]::Error.WriteLine("GPG $GpgCommand")
+  [Console]::Error.WriteLine("SIGNATURE $SignaturePath")
+  [Console]::Error.WriteLine("PAYLOAD $PayloadPath")
+  [Console]::Error.WriteLine("TEMP $tempDirectory")
 
   try {
     New-Item -ItemType Directory -Path $gpgHome -Force | Out-Null
