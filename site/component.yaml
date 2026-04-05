@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../buildish-site-pipeline/schemas/site-pipeline-component-v1.schema.json
 #
 # Copyright 2026 The Apache Software Foundation
 #
@@ -17,11 +18,5 @@ schemaVersion: 1
 component:
   slug: no-gradle-wrapper-jar
   displayName: No Gradle® Wrapper JAR
-  repository: https://github.com/apache/buildish-no-gradle-wrapper-jar
-  defaultBranch: main
 content:
   docsRoot: docs
-versioning:
-  unreleasedLabel: Unreleased
-navigation:
-  section: components
