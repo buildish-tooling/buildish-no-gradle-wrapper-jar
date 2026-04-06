@@ -52,7 +52,10 @@ jobs:
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip"
+          checksum_file="$archive.sha256"
           curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "$archive"
+          curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip.sha256" -o "$checksum_file"
+          printf '%s  %s\n' "$(tr -d '\r\n' < "$checksum_file")" "$archive" | sha256sum -c -
           unzip -q "$archive" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
 
@@ -89,7 +92,14 @@ jobs:
         shell: pwsh
         run: |
           $archive = Join-Path -Path $env:RUNNER_TEMP -ChildPath "gradle-$env:GRADLE_VERSION-bin.zip"
+          $checksumFile = "$archive.sha256"
           Invoke-WebRequest -Uri "https://services.gradle.org/distributions/gradle-$env:GRADLE_VERSION-bin.zip" -OutFile $archive
+          Invoke-WebRequest -Uri "https://services.gradle.org/distributions/gradle-$env:GRADLE_VERSION-bin.zip.sha256" -OutFile $checksumFile
+          $expectedHash = (Get-Content -LiteralPath $checksumFile -Raw).Trim()
+          $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
+            throw "Gradle SHA-256 mismatch for $archive. expected=$expectedHash actual=$actualHash"
+          }
           Expand-Archive -LiteralPath $archive -DestinationPath $env:RUNNER_TEMP -Force
           $gradleBinDirectory = Join-Path -Path (Join-Path -Path $env:RUNNER_TEMP -ChildPath "gradle-$env:GRADLE_VERSION") -ChildPath 'bin'
           Add-Content -Path $env:GITHUB_PATH -Value $gradleBinDirectory
@@ -126,24 +136,61 @@ jobs:
           pwsh -NoLogo -NoProfile -File tests/windows-git-gpg-rejection.ps1
 
       - name: Install GnuPG
-        # This is a quick way to get the gpg.exe we need for verification to work.
-        # The usual Windows install approaches are way too slow for CI.
+        shell: pwsh
+        env:
+          GNUPG_WINDOWS_INSTALLER_URL: https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.18_20260224.exe
+          # See ../signatures/README.md for details on the pinned GnuPG release-signing public keys.
+          GNUPG_WINDOWS_INSTALLER_SIGNATURE_PATH: .github/signatures/gnupg-w32-2.5.18_20260224.exe.sig
+          GNUPG_WINDOWS_SIGNATURE_KEY_PATH: .github/signatures/signature_key.asc
+          GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT: 6DAA6E64A76D2840571B4902528897B826403ADA
         run: |
-          # 1. Download the installer (5MB)
-          $url = "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.18_20260224.exe"
-          Write-Host "Downloading $url"
-          curl.exe -L -o gpg-install.exe $url
+          $archive = Join-Path -Path $env:RUNNER_TEMP -ChildPath 'gnupg-install.exe'
+          $signaturePath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:GNUPG_WINDOWS_INSTALLER_SIGNATURE_PATH
+          $signatureKeyPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:GNUPG_WINDOWS_SIGNATURE_KEY_PATH
+          $bootstrapGpgHome = Join-Path -Path $env:RUNNER_TEMP -ChildPath 'gnupg-bootstrap-home'
+          $extractDirectory = 'C:\gnupg_raw'
 
-          # 2. Extract it, this bypasses all the registry/service/hanging logic
-          Write-Host "Extracting ..."
-          7z x gpg-install.exe -o"C:\gnupg_raw" -y
+          if (-not (Test-Path -LiteralPath $signaturePath)) {
+            throw "Missing pinned installer signature at '$signaturePath'."
+          }
 
-          # 3. Find gpg.exe and add to PATH
-          Write-Host "Resolving ..."
-          $binPath = Resolve-Path "C:\gnupg_raw\bin" | Select-Object -ExpandProperty Path
-          echo "$binPath" >> $env:GITHUB_PATH
+          if (-not (Test-Path -LiteralPath $signatureKeyPath)) {
+            throw "Missing pinned GnuPG signature key file at '$signatureKeyPath'."
+          }
 
-          Write-Host "GPG unpacked to $binPath"
+          if (Test-Path -LiteralPath $bootstrapGpgHome) {
+            Remove-Item -LiteralPath $bootstrapGpgHome -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $bootstrapGpgHome | Out-Null
+
+          if (Test-Path -LiteralPath $extractDirectory) {
+            Remove-Item -LiteralPath $extractDirectory -Recurse -Force
+          }
+
+          # The runtime helper intentionally rejects Git-for-Windows GPG for batch
+          # launcher verification, but this CI bootstrap step only needs a
+          # temporary verifier for the pinned detached signature below.
+          Invoke-WebRequest -Uri $env:GNUPG_WINDOWS_INSTALLER_URL -OutFile $archive
+          & gpg --homedir $bootstrapGpgHome --batch --import $signatureKeyPath *> $null
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to import the pinned GnuPG release-signing public keys.'
+          }
+
+          $verificationOutput = & gpg --homedir $bootstrapGpgHome --batch --status-fd 1 --verify $signaturePath $archive 2>&1
+          $verificationExitCode = $LASTEXITCODE
+          $verificationOutput | ForEach-Object { Write-Host $_ }
+          if ($verificationExitCode -ne 0) {
+            throw 'The downloaded GnuPG installer failed detached-signature verification.'
+          }
+
+          $expectedValidSigPrefix = "[GNUPG:] VALIDSIG $env:GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT "
+          if (-not ($verificationOutput | Where-Object { $_.StartsWith($expectedValidSigPrefix) })) {
+            throw "The downloaded GnuPG installer was not signed by the expected release key $env:GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT."
+          }
+
+          7z x $archive "-o$extractDirectory" -y
+          $binPath = Resolve-Path (Join-Path -Path $extractDirectory -ChildPath 'bin') | Select-Object -ExpandProperty Path
+          Add-Content -Path $env:GITHUB_PATH -Value $binPath
 
       - name: Check gpg command and version
         run: |

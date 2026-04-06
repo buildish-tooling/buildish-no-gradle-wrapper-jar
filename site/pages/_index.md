@@ -20,4 +20,6 @@ No Gradle Wrapper JAR provides the copyable helper blueprint for projects that w
 
 Use the unreleased docs for installation, helper behavior, adoption steps, development verification, and current validation scope.
 
+See the [security and trust model](./security/) for the current assessment, trust boundaries, and operator-facing security guidance.
+
 {{< buildish-component-link kind="docs" label="Open Docs" appearance="primary" >}}

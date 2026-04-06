@@ -166,6 +166,15 @@ buildish_install_write_text_with_newlines() {
   done
 }
 
+# Derive the helper-aware batch Java invocation from the generated `%*` suffix so
+# each supported launcher shape only has to be listed once.
+buildish_install_patch_batch_execute_line() {
+  current_line=$1
+  patched_line=$(printf '%s\n' "$current_line" | sed 's/ %\*$/ %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*/')
+  [ "$patched_line" != "$current_line" ] || buildish_install_fail "Unsupported batch execute line shape: '$current_line'."
+  printf '%s' "$patched_line"
+}
+
 # Insert a block after any one of several exact anchor lines, preserving newline
 # style and execute bits, and treating the operation as idempotent if the
 # inserted first line is already present.
@@ -380,14 +389,14 @@ buildish_install_stage_helper_files() {
 buildish_install_update_gradlew_bat() {
   buildish_install_replace_exact_line_if_present \
     "$GRADLEW_BAT_PATH" \
-    'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"' \
+    "$GRADLEW_BAT_HELPER_COMMAND" \
     "$GRADLEW_BAT_HELPER_BLOCK" \
     'gradlew.bat'
   buildish_install_insert_after_any_line \
     "$GRADLEW_BAT_PATH" \
     "$GRADLEW_BAT_HELPER_BLOCK" \
     'gradlew.bat' \
-    'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi'
+    "$GRADLEW_BAT_ANCHOR"
   buildish_install_replace_exact_line_if_present \
     "$GRADLEW_BAT_PATH" \
     "$GRADLEW_BAT_OLD_EXECUTE_LINE" \
@@ -468,20 +477,24 @@ HELPER_INIT_PATH=$GRADLE_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts
 #
 # Supporting the pre-8.14 classpath/main-class form plus the later `-jar` forms
 # keeps the installer compatible across multiple Gradle minor lines.
-GRADLEW_BAT_HELPER_BLOCK=$(cat <<'EOF'
+GRADLEW_CURRENT_ANCHOR='APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '\''%s\n'\'' "$PWD" ) || exit'
+GRADLEW_OLD_ANCHOR='APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit'
+GRADLEW_BAT_ANCHOR='for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi'
+GRADLEW_BAT_HELPER_COMMAND='powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"'
+GRADLEW_BAT_HELPER_BLOCK=$(cat <<EOF
 set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*
 set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=
-for /f "delims=" %%a in ('powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a
+for /f "delims=" %%a in ('$GRADLEW_BAT_HELPER_COMMAND') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a
 set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=
 if errorlevel 1 goto fail
 EOF
 )
 GRADLEW_BAT_OLD_EXECUTE_LINE='"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*'
-GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE='"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
 GRADLEW_BAT_LEGACY_EXECUTE_LINE='"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*'
-GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE='"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
 GRADLEW_BAT_CURRENT_EXECUTE_LINE='"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*'
-GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE='"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
+GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE=$(buildish_install_patch_batch_execute_line "$GRADLEW_BAT_OLD_EXECUTE_LINE")
+GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE=$(buildish_install_patch_batch_execute_line "$GRADLEW_BAT_LEGACY_EXECUTE_LINE")
+GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE=$(buildish_install_patch_batch_execute_line "$GRADLEW_BAT_CURRENT_EXECUTE_LINE")
 
 [ -f "$PROPERTIES_PATH" ] ||
   buildish_install_fail "Gradle wrapper properties file was not found at '$PROPERTIES_PATH'. Run this installer from a Gradle project root or pass that directory as the only argument."
@@ -503,8 +516,8 @@ buildish_install_insert_after_any_line \
   "$GRADLEW_PATH" \
   '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' \
   'gradlew' \
-  'APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '\''%s\n'\'' "$PWD" ) || exit' \
-  'APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit'
+  "$GRADLEW_CURRENT_ANCHOR" \
+  "$GRADLEW_OLD_ANCHOR"
 buildish_install_update_gradlew_bat
 buildish_install_update_gitignore
 

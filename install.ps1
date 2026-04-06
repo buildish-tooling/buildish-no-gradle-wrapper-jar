@@ -90,6 +90,30 @@ function Set-BuildishUtf8NoBomFileText {
   [System.IO.File]::WriteAllText($Path, $Content, (Get-BuildishUtf8NoBomEncoding))
 }
 
+function Get-BuildishInstallPositiveIntegerFromEnvironment {
+  param(
+    [string]$EnvironmentVariableName,
+    [int]$DefaultValue,
+    [string]$Label
+  )
+
+  $rawValue = [System.Environment]::GetEnvironmentVariable($EnvironmentVariableName)
+  if ([string]::IsNullOrWhiteSpace($rawValue)) {
+    return $DefaultValue
+  }
+
+  $parsedValue = 0
+  if (-not [int]::TryParse($rawValue, [ref]$parsedValue) -or $parsedValue -le 0) {
+    throw "$Label must be a positive integer, but '$EnvironmentVariableName' was '$rawValue'."
+  }
+
+  return $parsedValue
+}
+
+# Bound installer downloads so helper bootstrap fails closed instead of hanging
+# forever behind broken or maliciously stalling HTTP infrastructure.
+$BuildishInstallHttpTimeoutSeconds = Get-BuildishInstallPositiveIntegerFromEnvironment -EnvironmentVariableName 'BUILDISH_NO_GRADLE_WRAPPER_JAR_INSTALL_HTTP_TIMEOUT_SECONDS' -DefaultValue 60 -Label 'Buildish installer HTTP timeout'
+
 # PowerShell on Windows reports symlinks and junctions as reparse points. The
 # installer rejects them so it never patches through indirection.
 function Test-BuildishReparsePoint {
@@ -123,6 +147,47 @@ function New-BuildishInstallTempPath {
   return [System.IO.Path]::Combine($Directory, ".buildish-no-gradle-wrapper-jar-install.$([System.IO.Path]::GetRandomFileName())")
 }
 
+function Get-BuildishInstallRemainingTimeout {
+  param(
+    [datetime]$Deadline,
+    [string]$Operation,
+    [string]$TimeoutDescription
+  )
+
+  $remaining = $Deadline - [datetime]::UtcNow
+  if ($remaining -le [System.TimeSpan]::Zero) {
+    throw "$Operation timed out after $TimeoutDescription."
+  }
+
+  return $remaining
+}
+
+function Wait-BuildishInstallTask {
+  param(
+    [System.Threading.Tasks.Task]$Task,
+    [datetime]$Deadline,
+    [string]$Operation,
+    [string]$TimeoutDescription
+  )
+
+  $remaining = Get-BuildishInstallRemainingTimeout -Deadline $Deadline -Operation $Operation -TimeoutDescription $TimeoutDescription
+  if (-not $Task.Wait($remaining)) {
+    throw "$Operation timed out after $TimeoutDescription."
+  }
+
+  return $Task.GetAwaiter().GetResult()
+}
+
+function Add-BuildishBatchHelperArgumentsToExecuteLine {
+  param([string]$ExecuteLine)
+
+  if (-not $ExecuteLine.EndsWith(' %*')) {
+    throw "Unsupported batch execute line shape: '$ExecuteLine'."
+  }
+
+  return $ExecuteLine.Substring(0, $ExecuteLine.Length - ' %*'.Length) + ' %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
+}
+
 # Download helper content to a temp file and move it into place only after the
 # transfer succeeds.
 function Save-BuildishDownloadedFile {
@@ -140,12 +205,16 @@ function Save-BuildishDownloadedFile {
   $response = $null
   $responseStream = $null
   $fileStream = $null
+  $timeoutDescription = "$BuildishInstallHttpTimeoutSeconds seconds"
+  $downloadOperation = "Downloading $Label from '$Uri'"
+  $deadline = [datetime]::UtcNow.AddSeconds($BuildishInstallHttpTimeoutSeconds)
 
   try {
     $handler = [System.Net.Http.HttpClientHandler]::new()
     $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [System.TimeSpan]::FromSeconds($BuildishInstallHttpTimeoutSeconds)
     $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
-    $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    $response = Wait-BuildishInstallTask -Task ($client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription
     $response.EnsureSuccessStatusCode()
 
     $contentLength = $response.Content.Headers.ContentLength
@@ -153,11 +222,11 @@ function Save-BuildishDownloadedFile {
       throw "$Label exceeded the maximum allowed size of $BuildishInstallMaxToolFileBytes bytes."
     }
 
-    $responseStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $responseStream = Wait-BuildishInstallTask -Task ($response.Content.ReadAsStreamAsync()) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription
     $fileStream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     $buffer = New-Object byte[] 81920
     [long]$totalBytes = 0
-    while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    while (($bytesRead = Wait-BuildishInstallTask -Task ($responseStream.ReadAsync($buffer, 0, $buffer.Length)) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription) -gt 0) {
       $totalBytes += $bytesRead
       if ($totalBytes -gt $BuildishInstallMaxToolFileBytes) {
         throw "$Label exceeded the maximum allowed size of $BuildishInstallMaxToolFileBytes bytes."
@@ -356,18 +425,12 @@ function Assert-BuildishAnyExactLinePresent {
 }
 
 function Update-BuildishGradlewBat {
-  $supportedExecuteLineReplacements = @(
-    @{ Current = $GradlewBatOldExecuteLine; Replacement = $GradlewBatPatchedOldExecuteLine },
-    @{ Current = $GradlewBatLegacyExecuteLine; Replacement = $GradlewBatPatchedLegacyExecuteLine },
-    @{ Current = $GradlewBatCurrentExecuteLine; Replacement = $GradlewBatPatchedCurrentExecuteLine }
-  )
-
-  Replace-BuildishExactLineIfPresent -Path $GradlewBatPath -CurrentLine 'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"' -Replacement $GradlewBatHelperBlock -Label 'gradlew.bat'
-  Add-BuildishBlockAfterAnyAnchor -Path $GradlewBatPath -InsertionBlock $GradlewBatHelperBlock -Label 'gradlew.bat' -Anchors @('for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi')
-  foreach ($executeLineReplacement in $supportedExecuteLineReplacements) {
+  Replace-BuildishExactLineIfPresent -Path $GradlewBatPath -CurrentLine $GradlewBatHelperInvocation -Replacement $GradlewBatHelperBlock -Label 'gradlew.bat'
+  Add-BuildishBlockAfterAnyAnchor -Path $GradlewBatPath -InsertionBlock $GradlewBatHelperBlock -Label 'gradlew.bat' -Anchors @($GradlewBatAnchor)
+  foreach ($executeLineReplacement in $GradlewBatSupportedExecuteLineReplacements) {
     Replace-BuildishExactLineIfPresent -Path $GradlewBatPath -CurrentLine $executeLineReplacement.Current -Replacement $executeLineReplacement.Replacement -Label 'gradlew.bat'
   }
-  Assert-BuildishAnyExactLinePresent -Path $GradlewBatPath -ExpectedLines @($supportedExecuteLineReplacements | ForEach-Object { $_.Replacement }) -Label 'gradlew.bat'
+  Assert-BuildishAnyExactLinePresent -Path $GradlewBatPath -ExpectedLines @($GradlewBatSupportedExecuteLineReplacements | ForEach-Object { $_.Replacement }) -Label 'gradlew.bat'
 }
 
 # Remove only regular files. This is used to delete an existing wrapper JAR so the
@@ -455,19 +518,25 @@ try {
   # an environment variable, then splice that variable into the final Java line.
   # The pre-8.14 classpath/main-class form plus the later `-jar` forms are
   # supported so the installer spans multiple Gradle minor lines explicitly.
-  $GradlewBatHelperBlock = @'
+  $GradlewCurrentAnchor = 'APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf ''%s\n'' "$PWD" ) || exit'
+  $GradlewOldAnchor = 'APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit'
+  $GradlewBatAnchor = 'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi'
+  $GradlewBatHelperInvocation = 'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"'
+  $GradlewBatHelperBlock = @"
 set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*
 set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=
-for /f "delims=" %%a in ('powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a
+for /f "delims=" %%a in ('$GradlewBatHelperInvocation') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a
 set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=
 if errorlevel 1 goto fail
-'@
-  $GradlewBatOldExecuteLine = '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*'
-  $GradlewBatPatchedOldExecuteLine = '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
-  $GradlewBatLegacyExecuteLine = '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*'
-  $GradlewBatPatchedLegacyExecuteLine = '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
-  $GradlewBatCurrentExecuteLine = '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*'
-  $GradlewBatPatchedCurrentExecuteLine = '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
+"@
+  $GradlewBatSupportedExecuteLines = @(
+    '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*',
+    '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*',
+    '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*'
+  )
+  $GradlewBatSupportedExecuteLineReplacements = @($GradlewBatSupportedExecuteLines | ForEach-Object {
+    @{ Current = $_; Replacement = (Add-BuildishBatchHelperArgumentsToExecuteLine -ExecuteLine $_) }
+  })
 
   if (-not (Test-Path -LiteralPath $GradlePropertiesPath -PathType Leaf)) {
     throw "Gradle wrapper properties file was not found at '$GradlePropertiesPath'. Run this installer from a Gradle project root or pass that directory as the only argument."
@@ -487,7 +556,7 @@ if errorlevel 1 goto fail
 
   # Patch the launchers and then assert that a supported final batch execute line
   # is present so new unsupported launcher shapes fail loudly during install.
-  Add-BuildishBlockAfterAnyAnchor -Path $GradlewPath -InsertionBlock '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' -Label 'gradlew' -Anchors @('APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf ''%s\n'' "$PWD" ) || exit', 'APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit')
+  Add-BuildishBlockAfterAnyAnchor -Path $GradlewPath -InsertionBlock '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' -Label 'gradlew' -Anchors @($GradlewCurrentAnchor, $GradlewOldAnchor)
   Update-BuildishGradlewBat
   Update-BuildishGitignore
 

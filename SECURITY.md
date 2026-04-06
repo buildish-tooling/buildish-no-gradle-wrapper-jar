@@ -19,3 +19,6 @@ limitations under the License.
 Apache Buildish follows the Apache Software Foundation security process.
 
 Please report suspected security issues to [security@apache.org](mailto:security@apache.org).
+
+For the current no-gradle-wrapper-jar trust model and security assessment, see
+[`site/pages/security.md`](./site/pages/security.md).

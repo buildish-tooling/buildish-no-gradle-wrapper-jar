@@ -50,32 +50,30 @@ val oldUnixAnchor =
 val unixInsertion = ". \"${'$'}{APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh\""
 val unixAnchors = listOf(currentUnixAnchor, oldUnixAnchor)
 val batchAnchor = "for %%i in (\"%APP_HOME%\") do set APP_HOME=%%~fi"
+val batchHelperCommand =
+  "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"%APP_HOME%\\gradle\\buildish-no-gradle-wrapper-jar.ps1\""
 val batchHelperBlock =
   """
   set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*
   set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=
-  for /f "delims=" %%a in ('powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a
+  for /f "delims=" %%a in ('$batchHelperCommand') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a
   set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=
   if errorlevel 1 goto fail
   """.trimIndent()
-val oldBatchExecuteLine =
-  "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" org.gradle.wrapper.GradleWrapperMain %*"
-val patchedOldBatchExecuteLine =
-  "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" org.gradle.wrapper.GradleWrapperMain %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*"
-val legacyBatchExecuteLine =
-  "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %*"
-val patchedLegacyBatchExecuteLine =
-  "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*"
-val currentBatchExecuteLine =
-  "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %*"
-val patchedCurrentBatchExecuteLine =
-  "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*"
-val batchExecuteLineReplacements =
+val batchExecuteLines =
   listOf(
-    oldBatchExecuteLine to patchedOldBatchExecuteLine,
-    legacyBatchExecuteLine to patchedLegacyBatchExecuteLine,
-    currentBatchExecuteLine to patchedCurrentBatchExecuteLine,
+    "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" org.gradle.wrapper.GradleWrapperMain %*",
+    "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %*",
+    "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %*",
   )
+
+fun patchBatchExecuteLine(currentLine: String): String {
+  require(currentLine.endsWith(" %*")) { "Unsupported batch execute line shape: '$currentLine'" }
+  return currentLine.removeSuffix(" %*") + " %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*"
+}
+
+val batchExecuteLineReplacements =
+  batchExecuteLines.map { currentLine -> currentLine to patchBatchExecuteLine(currentLine) }
 
 // Preserve the target file's original newline style so Gradle keeps emitting the
 // script format expected on each platform.

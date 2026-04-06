@@ -56,6 +56,30 @@ $TrustedGradleKeyFingerprint = '1bd97a6a154e7810ee0bc832e2f38302c8075e3d'
 $BuildishMetadataMaxBytes = 64KB
 $BuildishWrapperJarMaxBytes = 10MB
 $BuildishIsWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+
+function Get-BuildishNoGradleWrapperJarPositiveIntegerFromEnvironment {
+  param(
+    [string]$EnvironmentVariableName,
+    [int]$DefaultValue,
+    [string]$Label
+  )
+
+  $rawValue = [System.Environment]::GetEnvironmentVariable($EnvironmentVariableName)
+  if ([string]::IsNullOrWhiteSpace($rawValue)) {
+    return $DefaultValue
+  }
+
+  $parsedValue = 0
+  if (-not [int]::TryParse($rawValue, [ref]$parsedValue) -or $parsedValue -le 0) {
+    throw "$Label must be a positive integer, but '$EnvironmentVariableName' was '$rawValue'."
+  }
+
+  return $parsedValue
+}
+
+# Bound every network download so helper bootstrap cannot hang forever behind a
+# broken proxy, blackholed endpoint, or maliciously stalling server.
+$BuildishHttpTimeoutSeconds = Get-BuildishNoGradleWrapperJarPositiveIntegerFromEnvironment -EnvironmentVariableName 'BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS' -DefaultValue 60 -Label 'Buildish helper HTTP timeout'
 $TrustedGradlePublicKey = @'
 -----BEGIN PGP PUBLIC KEY BLOCK-----
 
@@ -163,6 +187,37 @@ function New-BuildishNoGradleWrapperJarTempPath {
   param([string]$Directory)
 
   return [System.IO.Path]::Combine($Directory, ".buildish-no-gradle-wrapper-jar.$([System.IO.Path]::GetRandomFileName())")
+}
+
+function Get-BuildishNoGradleWrapperJarRemainingTimeout {
+  param(
+    [datetime]$Deadline,
+    [string]$Operation,
+    [string]$TimeoutDescription
+  )
+
+  $remaining = $Deadline - [datetime]::UtcNow
+  if ($remaining -le [System.TimeSpan]::Zero) {
+    throw "$Operation timed out after $TimeoutDescription."
+  }
+
+  return $remaining
+}
+
+function Wait-BuildishNoGradleWrapperJarTask {
+  param(
+    [System.Threading.Tasks.Task]$Task,
+    [datetime]$Deadline,
+    [string]$Operation,
+    [string]$TimeoutDescription
+  )
+
+  $remaining = Get-BuildishNoGradleWrapperJarRemainingTimeout -Deadline $Deadline -Operation $Operation -TimeoutDescription $TimeoutDescription
+  if (-not $Task.Wait($remaining)) {
+    throw "$Operation timed out after $TimeoutDescription."
+  }
+
+  return $Task.GetAwaiter().GetResult()
 }
 
 # Write ASCII text deterministically. The checksum and armored-signature files are
@@ -339,12 +394,16 @@ function Save-BuildishNoGradleWrapperJarDownloadedFile {
   $response = $null
   $responseStream = $null
   $fileStream = $null
+  $timeoutDescription = "$BuildishHttpTimeoutSeconds seconds"
+  $downloadOperation = "Downloading $Label from '$Uri'"
+  $deadline = [datetime]::UtcNow.AddSeconds($BuildishHttpTimeoutSeconds)
   try {
     Import-BuildishNoGradleWrapperJarHttpClientTypes
     $handler = [System.Net.Http.HttpClientHandler]::new()
     $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [System.TimeSpan]::FromSeconds($BuildishHttpTimeoutSeconds)
     $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
-    $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    $response = Wait-BuildishNoGradleWrapperJarTask -Task ($client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription
     $response.EnsureSuccessStatusCode()
 
     $contentLength = $response.Content.Headers.ContentLength
@@ -352,11 +411,11 @@ function Save-BuildishNoGradleWrapperJarDownloadedFile {
       throw "$Label exceeded the maximum allowed size of $MaxBytes bytes."
     }
 
-    $responseStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $responseStream = Wait-BuildishNoGradleWrapperJarTask -Task ($response.Content.ReadAsStreamAsync()) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription
     $fileStream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     $buffer = New-Object byte[] 81920
     [long]$totalBytes = 0
-    while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    while (($bytesRead = Wait-BuildishNoGradleWrapperJarTask -Task ($responseStream.ReadAsync($buffer, 0, $buffer.Length)) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription) -gt 0) {
       $totalBytes += $bytesRead
       if ($totalBytes -gt $MaxBytes) {
         throw "$Label exceeded the maximum allowed size of $MaxBytes bytes."

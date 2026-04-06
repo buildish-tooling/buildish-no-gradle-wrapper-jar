@@ -32,7 +32,44 @@ script, patch existing `gradlew` / `gradlew.bat`, remove any pre-existing
 The installer scripts for POSIX environments and Windows are idempotent, so safe to run multiple times.
 Re-running the installer scripts updates the helper files to the latest version.
 
-### POSIX / bash
+### Recommended reviewed-install flow
+
+Prefer downloading or checking out this repository first, then running the installer from a reviewed
+local copy:
+
+#### POSIX / bash
+
+Run from the target project root:
+
+```sh
+bash ./tools/buildish-no-gradle-wrapper-jar/install.sh
+```
+
+To target a different directory:
+
+```sh
+bash ./tools/buildish-no-gradle-wrapper-jar/install.sh /path/to/project
+```
+
+#### Windows / PowerShell
+
+Run from the target project root:
+
+```powershell
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-gradle-wrapper-jar\install.ps1
+```
+
+Or run it against a specific directory:
+
+```powershell
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-gradle-wrapper-jar\install.ps1 C:\path\to\project
+```
+
+### Convenience remote-execution flow
+
+If you explicitly accept executing remote script content, these one-liners still work.
+
+#### POSIX / bash
 
 Run from the target project root:
 
@@ -46,7 +83,7 @@ To target a different directory:
 curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/install.sh | bash -s -- /path/to/project
 ```
 
-### Windows / PowerShell
+#### Windows / PowerShell
 
 Run from the target project root:
 
@@ -64,7 +101,11 @@ powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-
 
 The `curl | bash` and `Invoke-RestMethod | Invoke-Expression` forms execute remote script content.
 Prefer pinning to a reviewed tag or commit, or download the installer first and inspect it before
-execution if your environment requires stricter supply-chain controls.
+execution if your environment requires stricter supply-chain controls. The reviewed local-copy flow
+above is the preferred path until the release bootstrap is cryptographically pinned.
+
+For the detailed, non-versioned trust model and the current security assessment, see
+[`site/pages/security.md`](../site/pages/security.md).
 
 For trusted local development and integration testing, pass `--source-dir <path>` to point the
 installer at a checked-out `tools/buildish-no-gradle-wrapper-jar/` directory and copy helper
@@ -83,7 +124,7 @@ The helpers are standalone on purpose. They do not import this repository's Type
 The scripts in this repository are written in POSIX shell and Windows PowerShell not just for maximum
 portability, but to explicitly enable inspection and verification.
 They do not require any external dependencies beyond a POSIX shell and `gpg` on
-POSIX, or PowerShell and `gpg.exe` on Windows.
+POSIX, or PowerShell and a native Windows `gpg.exe` on Windows.
 
 ## What the helpers do
 
@@ -91,15 +132,8 @@ The helpers read `gradle/wrapper/gradle-wrapper.properties`, derive the configur
 ensure that `gradle/wrapper/gradle-wrapper.jar` is present and verified before Gradle starts, and
 inject the project-local Gradle init script when it is available.
 
-They mirror the _Apache Buildish Mammoth Cache for Gradle_ action's trust model:
-
-1. require a canonical `https://services.gradle.org/distributions/...` `distributionUrl`
-2. download the wrapper JAR checksum from `services.gradle.org`
-3. download the wrapper JAR detached signature from `services.gradle.org`
-4. download the wrapper JAR bytes from the matching Gradle source tag on GitHub
-5. verify the JAR against both:
-   - the authoritative SHA-256 checksum
-   - the detached OpenPGP signature using pinned Gradle signing keys
+The detailed verification flow and trust boundaries live in [`site/pages/security.md`](../site/pages/security.md).
+This release-specific page only documents the operational behavior of the shipped helper scripts.
 
 The helpers retain the downloaded metadata beside the wrapper properties file as:
 
@@ -112,6 +146,32 @@ written files are not left behind if a download or verification step fails.
 The injected init script hooks the Gradle `Wrapper` task so that when Renovate or a developer runs
 `./gradlew wrapper`, the freshly generated `gradlew` / `gradlew.bat` files are patched again with
 the Buildish helper invocation.
+
+## Troubleshooting
+
+### PowerShell says `gpg.exe` is unsupported or missing
+
+The Windows helper requires a native Windows GnuPG installation. The Git-for-Windows bundled
+`gpg.exe` is intentionally rejected for `gradlew.bat` verification. Install `Gpg4win`,
+`choco install gnupg`, or `scoop install gpg`.
+
+### The helper reports a checksum or detached-signature mismatch
+
+Treat that as a security failure, not as a transient warning. The helper intentionally refuses to
+run Gradle with an unverified `gradle-wrapper.jar`. Remove the retained metadata files only if you
+understand why they are stale, then retry.
+
+### The installer or helper fails with a timeout
+
+That usually means a stalled network path, proxy, or upstream endpoint. Recent PowerShell download
+paths fail explicitly instead of hanging forever. Fix the network path and retry instead of trying
+to bypass verification.
+
+### The installer says the launcher shape is unsupported
+
+The patching logic intentionally expects known Gradle launcher patterns so it can fail closed.
+Regenerate the wrapper with a supported Gradle version or update this blueprint to the new launcher
+shape before patching it automatically.
 
 ## Required tools
 
@@ -126,9 +186,18 @@ the Buildish helper invocation.
 ### PowerShell helper
 
 - Windows PowerShell / PowerShell
-- `gpg` / `gpg.exe`
+- native Windows `gpg.exe`
 - `Invoke-WebRequest`
 - `Get-FileHash`
+
+> [!IMPORTANT]
+> `gradlew.bat` verification requires a native Windows GnuPG build. The helper intentionally rejects
+> the Git-for-Windows bundled `gpg.exe` because that MSYS-flavored toolchain resolves helper programs
+> via Unix-style paths and breaks the verification contract. Install one of these instead:
+>
+> - [Gpg4win](https://gpg4win.org/)
+> - `choco install gnupg`
+> - `scoop install gpg`
 
 ## Manual installation
 

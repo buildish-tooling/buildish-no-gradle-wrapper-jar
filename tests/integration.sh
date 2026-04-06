@@ -33,6 +33,7 @@ TWO_SEGMENT_GRADLE_VERSION=${TWO_SEGMENT_GRADLE_VERSION:-8.14}
 HELPER_MAX_METADATA_BYTES=65536
 HELPER_MAX_JAR_BYTES=10485760
 INSTALLER_MAX_TOOL_FILE_BYTES=262144
+POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS=2
 
 fail() {
   echo "integration-test: $*" >&2
@@ -198,7 +199,7 @@ path.write_bytes(prefix + (b'a' * (size_bytes - len(prefix))))
 PY
 }
 
-stop_static_http_server() {
+stop_test_http_server() {
   if [ -n "$TEST_HTTP_SERVER_PID" ]; then
     kill "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1 || true
     wait "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1 || true
@@ -212,7 +213,7 @@ stop_static_http_server() {
 
 start_static_http_server() {
   served_dir=$1
-  stop_static_http_server
+  stop_test_http_server
   TEST_HTTP_SERVER_PORT_FILE=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-port.XXXXXX")
   TEST_HTTP_SERVER_LOG=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-log.XXXXXX")
 
@@ -248,8 +249,49 @@ PY
   done
 
   log_contents=$(cat "$TEST_HTTP_SERVER_LOG" 2>/dev/null || true)
-  stop_static_http_server
+  stop_test_http_server
   fail "unable to start the local HTTP test server. log=$log_contents"
+}
+
+start_stalling_http_server() {
+  stop_test_http_server
+  TEST_HTTP_SERVER_PORT_FILE=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-port.XXXXXX")
+  TEST_HTTP_SERVER_LOG=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-log.XXXXXX")
+
+  python3 - <<'PY' "$TEST_HTTP_SERVER_PORT_FILE" >"$TEST_HTTP_SERVER_LOG" 2>&1 &
+import socket
+import sys
+import time
+
+port_file = sys.argv[1]
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(5)
+    with open(port_file, "w", encoding="utf-8") as handle:
+        handle.write(str(server.getsockname()[1]))
+    while True:
+        connection, _ = server.accept()
+        with connection:
+            time.sleep(60)
+PY
+  TEST_HTTP_SERVER_PID=$!
+
+  for _ in $(seq 1 100); do
+    if [ -s "$TEST_HTTP_SERVER_PORT_FILE" ]; then
+      TEST_HTTP_SERVER_PORT=$(cat "$TEST_HTTP_SERVER_PORT_FILE")
+      return 0
+    fi
+    if ! kill -0 "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  log_contents=$(cat "$TEST_HTTP_SERVER_LOG" 2>/dev/null || true)
+  stop_test_http_server
+  fail "unable to start the stalling HTTP test server. log=$log_contents"
 }
 
 copy_project_fixture() {
@@ -553,6 +595,14 @@ run_powershell_installer_capture_with_base_url() {
   run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL="$base_url" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
 }
 
+run_powershell_installer_capture_with_base_url_and_timeout() {
+  project_dir=$1
+  base_url=$2
+  timeout_seconds=$3
+  log "installing PowerShell helper into '$project_dir' from '$base_url' with timeout ${timeout_seconds}s"
+  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL="$base_url" BUILDISH_NO_GRADLE_WRAPPER_JAR_INSTALL_HTTP_TIMEOUT_SECONDS="$timeout_seconds" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
+}
+
 run_posix_helper_direct() {
   project_dir=$1
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
@@ -574,6 +624,15 @@ run_powershell_helper_direct() {
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1"
   log "running PowerShell helper directly in '$project_dir'"
   run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" pwsh -NoLogo -NoProfile -File "$helper_path"
+}
+
+run_powershell_helper_direct_with_timeout() {
+  project_dir=$1
+  timeout_seconds=$2
+  original_args=${3:-}
+  helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1"
+  log "running PowerShell helper directly in '$project_dir' with timeout ${timeout_seconds}s"
+  run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS="$timeout_seconds" pwsh -NoLogo -NoProfile -File "$helper_path"
 }
 
 assert_installer_distribution_sha_warning_output() {
@@ -691,11 +750,30 @@ exercise_helper_oversized_download_failure() {
   configure_helper_download_urls "$project_dir" "$helper_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
 
   "run_${helper_kind}_helper_direct" "$project_dir"
-  stop_static_http_server
+  stop_test_http_server
 
   assert_last_command_failed "$helper_kind helper unexpectedly accepted an oversized $download_kind download."
   assert_last_output_contains 'maximum allowed size' "$helper_kind helper failure output did not mention the maximum allowed size for the oversized $download_kind download."
   [ ! -e "$target_path" ] || fail "$helper_kind helper should not publish an oversized $download_kind file into '$target_path'."
+}
+
+exercise_powershell_helper_download_timeout_failure() {
+  project_dir=$1
+  version=$2
+  sha_path="$project_dir/gradle/wrapper/gradle-wrapper-$version.sha256"
+
+  log "exercising PowerShell helper download-timeout failure in '$project_dir' for Gradle '$version'"
+  rm -f "$sha_path"
+
+  start_stalling_http_server
+  configure_helper_download_urls "$project_dir" powershell "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+
+  run_powershell_helper_direct_with_timeout "$project_dir" "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS"
+  stop_test_http_server
+
+  assert_last_command_failed 'PowerShell helper unexpectedly succeeded even though the download endpoint stalled.'
+  assert_last_output_contains 'timed out after' 'PowerShell helper timeout failure output did not mention the configured timeout.'
+  [ ! -e "$sha_path" ] || fail "PowerShell helper should not publish a timed-out checksum download into '$sha_path'."
 }
 
 exercise_helper_invalid_distribution_failure() {
@@ -746,11 +824,27 @@ exercise_installer_oversized_tool_download_failure() {
 
   start_static_http_server "$server_root"
   "run_${installer_kind}_installer_capture_with_base_url" "$project_dir" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
-  stop_static_http_server
+  stop_test_http_server
 
   assert_last_command_failed "$installer_kind installer unexpectedly accepted an oversized bootstrap helper download."
   assert_last_output_contains 'maximum allowed size' "$installer_kind installer failure output did not mention the maximum allowed size for the oversized bootstrap download."
   [ ! -e "$target_path" ] || fail "$installer_kind installer should not publish an oversized helper file into '$target_path'."
+}
+
+exercise_powershell_installer_download_timeout_failure() {
+  project_dir=$1
+  target_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
+
+  log "exercising PowerShell installer download-timeout failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+
+  start_stalling_http_server
+  run_powershell_installer_capture_with_base_url_and_timeout "$project_dir" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT" "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS"
+  stop_test_http_server
+
+  assert_last_command_failed 'PowerShell installer unexpectedly succeeded even though the bootstrap endpoint stalled.'
+  assert_last_output_contains 'timed out after' 'PowerShell installer timeout failure output did not mention the configured timeout.'
+  [ ! -e "$target_path" ] || fail "$target_path should not be created when the PowerShell installer download times out."
 }
 
 exercise_helper_missing_properties_failure() {
@@ -1059,6 +1153,31 @@ run_powershell_installer_flow() {
   assert_metadata_for_version "$project_dir" "$installed_version"
 }
 
+exercise_launcher_patch_contract_consistency() {
+  log 'checking launcher patch contract consistency across install and init-script sources'
+
+  python3 - <<'PY' "$TOOL_DIR/install.sh" "$TOOL_DIR/install.ps1" "$TOOL_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" || fail 'launcher patch contract drifted across installer/init-script sources.'
+from pathlib import Path
+import re
+import sys
+
+paths = [Path(argument) for argument in sys.argv[1:]]
+texts = {path.name: path.read_text().replace('\r\n', '\n') for path in paths}
+shared_patterns = [
+    r'for %%i in \(.+%APP_HOME%.+\) do set APP_HOME=%%~fi',
+    r'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .*buildish-no-gradle-wrapper-jar\.ps1',
+    r'org\.gradle\.wrapper\.GradleWrapperMain %\*',
+    r'-classpath .*gradle-wrapper\.jar.* %\*',
+    r'-jar .*gradle-wrapper\.jar.* %\*',
+]
+
+for name, text in texts.items():
+    for pattern in shared_patterns:
+        if re.search(pattern, text) is None:
+            raise SystemExit(f"{name} is missing launcher contract pattern: {pattern!r}")
+PY
+}
+
 run_helper_edge_case_suite() {
   test_root=$1
   posix_base_project=$2
@@ -1130,6 +1249,9 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-oversized-wrapper-jar-download"
   exercise_helper_oversized_download_failure "$scenario_root/powershell-oversized-wrapper-jar-download" "$powershell_version" powershell jar
 
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-download-timeout"
+  exercise_powershell_helper_download_timeout_failure "$scenario_root/powershell-download-timeout" "$powershell_version"
+
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-properties"
   exercise_helper_missing_properties_failure "$scenario_root/powershell-missing-properties" powershell
 
@@ -1147,15 +1269,17 @@ run_default_integration_suite() {
   require_base_commands
   require_command pwsh
   test_root=$(mktemp -d "$BUILD_DIR/integration.XXXXXX")
-  trap 'stop_static_http_server; rm -rf "$test_root"' EXIT HUP INT TERM
+  trap 'stop_test_http_server; rm -rf "$test_root"' EXIT HUP INT TERM
 
   log "starting default integration suite (test_root='$test_root')"
+  exercise_launcher_patch_contract_consistency
   exercise_wrapper_update_to_version "$test_root/posix-installer" '' "$UPDATED_GRADLE_VERSION"
   run_powershell_installer_flow "$test_root/powershell-installer"
   run_helper_edge_case_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
   run_init_script_focused_suite "$test_root"
   exercise_installer_oversized_tool_download_failure "$test_root/posix-installer-oversized-bootstrap" posix
   exercise_installer_oversized_tool_download_failure "$test_root/powershell-installer-oversized-bootstrap" powershell
+  exercise_powershell_installer_download_timeout_failure "$test_root/powershell-installer-timeout"
   exercise_installer_missing_properties_failure "$test_root/posix-installer-missing-properties" posix
   exercise_installer_missing_properties_failure "$test_root/powershell-installer-missing-properties" powershell
   log 'all helper-tool integration checks passed.'

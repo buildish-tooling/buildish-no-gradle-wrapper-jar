@@ -1,3 +1,8 @@
+---
+title: "Security and trust model"
+description: Security properties, trust boundaries, and the current assessment for the no-gradle-wrapper-jar blueprint.
+---
+
 <!--
   Copyright 2026 The Apache Software Foundation
 
@@ -14,9 +19,63 @@
   limitations under the License.
 -->
 
-# Security assessment
+# Security and trust model
 
-Date: 2026-04-01
+Date: 2026-04-06
+
+This page explains what the no-gradle-wrapper-jar blueprint verifies, which trust boundaries it
+assumes, and which security gap still remains before the component can claim a fully pinned
+bootstrap path.
+
+## Trust model
+
+### Runtime helper path
+
+The strongest trust boundary in this repository is the normal `gradlew` / `gradlew.bat` runtime
+path.
+
+Before the helper accepts `gradle/wrapper/gradle-wrapper.jar`, it requires all of these checks to
+pass:
+
+1. `distributionUrl` must use the canonical `https://services.gradle.org/distributions/...` shape.
+2. The Gradle version is derived only from the validated distribution URL.
+3. The authoritative wrapper checksum and detached signature are downloaded from
+   `services.gradle.org`.
+4. The wrapper JAR bytes are downloaded from the matching Gradle source tag on GitHub.
+5. The JAR must match the expected SHA-256 checksum.
+6. The detached signature must verify against pinned Gradle signing-key fingerprints in an isolated
+   temporary GPG home.
+7. Downloaded metadata and JAR files are written via temporary paths and only moved into place on
+   success.
+
+That means poisoned cache content or a corrupted download should fail closed instead of being
+accepted silently.
+
+### Installer bootstrap path
+
+The installer path is intentionally documented as weaker today.
+
+`install.sh` and `install.ps1` still download helper files from
+`raw.githubusercontent.com/apache/buildish/...` without a detached-signature or checksum
+verification step for the helper payload itself. This is the main remaining security gap.
+
+The same warning applies to trusted-input overrides:
+
+- `--source-dir` is for trusted local development and tests only.
+- `BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL` is trusted input, not an untrusted user setting.
+
+### CI bootstrap path
+
+The repository's own CI bootstrap is in better shape than before:
+
+- GitHub Actions are pinned by SHA.
+- Workflow permissions stay minimal.
+- The Gradle distribution ZIP is checked against the official SHA-256 file before use.
+- Windows CI keeps the fast direct GnuPG installer download path, but only after verifying the
+  downloaded `.exe` against repo-pinned signature material in `.github/signatures/`.
+- That Windows CI check imports the repo-pinned `signature_key.asc`, verifies the repo-pinned
+  detached `.sig`, and requires the expected valid signer fingerprint
+  `6DAA6E64A76D2840571B4902528897B826403ADA`.
 
 ## Scope
 
@@ -51,6 +110,15 @@ signature verification step. If that bootstrap source, its TLS trust, or the
 installer's source-selection environment variables are compromised, the result is
 arbitrary code execution in the developer or CI context.
 
+## Operator guidance
+
+- Prefer the reviewed local-copy installer flow over remote pipe-to-shell execution.
+- Treat `--source-dir` and base-URL overrides as trusted-development-only inputs.
+- On Windows, use a native Windows GnuPG build for `gradlew.bat` verification. The helper
+  intentionally rejects the Git-for-Windows bundled `gpg.exe`.
+- Expect timeout failures to be explicit now; a hung PowerShell download should fail with a timeout
+  error instead of waiting forever.
+
 ## Positive security properties
 
 - `distributionUrl` is restricted to canonical `https://services.gradle.org/...`
@@ -59,8 +127,13 @@ arbitrary code execution in the developer or CI context.
 - GPG verification runs in a fresh temporary home and disables auto key retrieval.
 - Corrupt cached JARs are deleted before redownload.
 - Metadata and JAR downloads use temp files and move into place only after success.
+- PowerShell download paths fail within explicit time bounds instead of waiting indefinitely.
 - Installers reject symlinks / reparse points instead of following them.
+- Windows helper execution rejects Git-for-Windows GPG and requires native Windows GnuPG.
 - GitHub Actions are pinned by SHA and use `persist-credentials: false`.
+- CI verifies the downloaded Gradle distribution against the official SHA-256 file.
+- Windows CI verifies the fast direct GnuPG installer download against repo-pinned OpenPGP
+  signature material before extraction.
 - Workflow permissions are minimal (`contents: read` by default).
 
 ## Findings
@@ -80,8 +153,8 @@ Those downloads are not verified with a checksum, detached signature, or release
 archive signature.
 
 > [!NOTE]
-> The installation method will be hardened with the first release of this component.
-> See [`release-work.md`](./release-work.md) for details.
+> The installation method is expected to be hardened further with the first release of this
+> component by moving the installer bootstrap from raw helper downloads to a signed release asset.
 
 Impact:
 
@@ -105,27 +178,7 @@ Recommendation:
 - Treat `--source-dir` as a trusted-development-only flag; it bypasses the download path
   and installs files directly from a local directory without additional verification.
 
-### 2. Low: CI installs Gradle over HTTPS without checksum verification
-
-Affected file:
-
-- `.github/workflows/ci.yml`
-
-The CI workflow downloads `gradle-8.14.4-bin.zip` directly and installs it without
-verifying an official checksum or signature.
-
-Impact:
-
-- A compromise of the download path for that CI bootstrap step could execute
-  attacker-controlled Gradle code inside CI.
-- The workflow permissions are relatively constrained, which limits blast radius,
-  but this is still avoidable supply-chain exposure.
-
-Recommendation:
-
-- Verify the Gradle distribution checksum in CI before unpacking it.
-
-### 3. Informational: local write access to the project implies full compromise
+### 2. Informational: local write access to the project implies full compromise
 
 Affected files:
 
@@ -214,5 +267,6 @@ The runtime verification design for `gradle-wrapper.jar` is strong and appears t
 prevent silent acceptance of poisoned cached JAR contents under the normal threat
 model.
 
-The most important remaining risk is the unsigned installer/bootstrap path. If that
-is hardened, the repository's security posture becomes materially stronger.
+The most important remaining risk is the unsigned installer/bootstrap path. Outside
+that gap, the runtime helper, launcher patching, CI bootstrap, and current operator
+guidance are in good shape for this stage of the project.
