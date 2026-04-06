@@ -187,21 +187,24 @@ jobs:
           $signatureKeyPathForGpg = Convert-ToGitForWindowsPath -Path $signatureKeyPath
           $archiveForGpg = Convert-ToGitForWindowsPath -Path $archive
 
-          $importOutput = & gpg --homedir $bootstrapGpgHomeForGpg --batch --import $signatureKeyPathForGpg 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            $importOutput | ForEach-Object { Write-Host $_ }
+          $importOutput = @(& gpg --homedir $bootstrapGpgHomeForGpg --batch --import $signatureKeyPathForGpg 2>&1)
+          $importExitCode = $LASTEXITCODE
+          $importOutputLines = @($importOutput | ForEach-Object { $_.ToString() })
+          if ($importExitCode -ne 0) {
+            $importOutputLines | ForEach-Object { Write-Host $_ }
             throw 'Unable to import the pinned GnuPG release-signing public key.'
           }
 
-          $verificationOutput = & gpg --homedir $bootstrapGpgHomeForGpg --batch --status-fd 1 --verify $signaturePathForGpg $archiveForGpg 2>&1
+          $verificationOutput = @(& gpg --homedir $bootstrapGpgHomeForGpg --batch --status-fd 1 --verify $signaturePathForGpg $archiveForGpg 2>&1)
           $verificationExitCode = $LASTEXITCODE
-          $verificationOutput | ForEach-Object { Write-Host $_ }
+          $verificationOutputLines = @($verificationOutput | ForEach-Object { $_.ToString() })
+          $verificationOutputLines | ForEach-Object { Write-Host $_ }
           if ($verificationExitCode -ne 0) {
             throw 'The downloaded GnuPG installer failed detached-signature verification.'
           }
 
           $expectedValidSigPrefix = "[GNUPG:] VALIDSIG $env:GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT "
-          if (-not ($verificationOutput | Where-Object { $_.StartsWith($expectedValidSigPrefix) })) {
+          if (-not ($verificationOutputLines | Where-Object { $_.StartsWith($expectedValidSigPrefix) })) {
             throw "The downloaded GnuPG installer was not signed by the expected release key $env:GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT."
           }
 
