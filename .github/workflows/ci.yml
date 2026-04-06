@@ -144,6 +144,17 @@ jobs:
           GNUPG_WINDOWS_SIGNATURE_KEY_PATH: .github/signatures/signature_key.asc
           GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT: 6DAA6E64A76D2840571B4902528897B826403ADA
         run: |
+          function Convert-ToGitForWindowsPath {
+            param([string]$Path)
+
+            $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+            if ($resolvedPath -notmatch '^[A-Za-z]:\\') {
+              throw "Expected a drive-qualified Windows path, got '$resolvedPath'."
+            }
+
+            return '/' + $resolvedPath.Substring(0, 1).ToLowerInvariant() + $resolvedPath.Substring(2).Replace('\', '/')
+          }
+
           $archive = Join-Path -Path $env:RUNNER_TEMP -ChildPath 'gnupg-install.exe'
           $signaturePath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:GNUPG_WINDOWS_INSTALLER_SIGNATURE_PATH
           $signatureKeyPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath $env:GNUPG_WINDOWS_SIGNATURE_KEY_PATH
@@ -171,13 +182,18 @@ jobs:
           # launcher verification, but this CI bootstrap step only needs a
           # temporary verifier for the pinned detached signature below.
           Invoke-WebRequest -Uri $env:GNUPG_WINDOWS_INSTALLER_URL -OutFile $archive
-          $importOutput = & gpg --homedir $bootstrapGpgHome --batch --import $signatureKeyPath 2>&1
+          $bootstrapGpgHomeForGpg = Convert-ToGitForWindowsPath -Path $bootstrapGpgHome
+          $signaturePathForGpg = Convert-ToGitForWindowsPath -Path $signaturePath
+          $signatureKeyPathForGpg = Convert-ToGitForWindowsPath -Path $signatureKeyPath
+          $archiveForGpg = Convert-ToGitForWindowsPath -Path $archive
+
+          $importOutput = & gpg --homedir $bootstrapGpgHomeForGpg --batch --import $signatureKeyPathForGpg 2>&1
           if ($LASTEXITCODE -ne 0) {
             $importOutput | ForEach-Object { Write-Host $_ }
             throw 'Unable to import the pinned GnuPG release-signing public key.'
           }
 
-          $verificationOutput = & gpg --homedir $bootstrapGpgHome --batch --status-fd 1 --verify $signaturePath $archive 2>&1
+          $verificationOutput = & gpg --homedir $bootstrapGpgHomeForGpg --batch --status-fd 1 --verify $signaturePathForGpg $archiveForGpg 2>&1
           $verificationExitCode = $LASTEXITCODE
           $verificationOutput | ForEach-Object { Write-Host $_ }
           if ($verificationExitCode -ne 0) {
