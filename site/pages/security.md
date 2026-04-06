@@ -73,7 +73,8 @@ The repository's own CI bootstrap is in better shape than before:
 - The Gradle distribution ZIP is checked against the official SHA-256 file before use.
 - Windows CI keeps the fast direct GnuPG installer download path, but only after verifying the
   downloaded `.exe` against repo-pinned signature material in `.github/signatures/`.
-- That Windows CI check imports the repo-pinned `signature_key.asc`, verifies the repo-pinned
+- That Windows CI check imports the repo-pinned minimal allowed-signer key in
+  `signature_key.asc`, verifies the repo-pinned
   detached `.sig`, and requires the expected valid signer fingerprint
   `6DAA6E64A76D2840571B4902528897B826403ADA`.
 

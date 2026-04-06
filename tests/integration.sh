@@ -89,6 +89,13 @@ assert_last_output_equals() {
   [ "$CAPTURED_OUTPUT" = "$expected_text" ] || fail "$failure_message (output=$CAPTURED_OUTPUT)"
 }
 
+assert_last_output_mentions_timeout() {
+  timeout_seconds=$1
+  failure_message=$2
+  assert_last_output_contains 'timed out' "$failure_message"
+  assert_last_output_contains "after $timeout_seconds seconds" "$failure_message"
+}
+
 assert_last_output_exact_line_count() {
   expected_line=$1
   expected_count=$2
@@ -772,7 +779,7 @@ exercise_powershell_helper_download_timeout_failure() {
   stop_test_http_server
 
   assert_last_command_failed 'PowerShell helper unexpectedly succeeded even though the download endpoint stalled.'
-  assert_last_output_contains 'timed out after' 'PowerShell helper timeout failure output did not mention the configured timeout.'
+  assert_last_output_mentions_timeout "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS" 'PowerShell helper timeout failure output did not mention the configured timeout.'
   [ ! -e "$sha_path" ] || fail "PowerShell helper should not publish a timed-out checksum download into '$sha_path'."
 }
 
@@ -843,7 +850,7 @@ exercise_powershell_installer_download_timeout_failure() {
   stop_test_http_server
 
   assert_last_command_failed 'PowerShell installer unexpectedly succeeded even though the bootstrap endpoint stalled.'
-  assert_last_output_contains 'timed out after' 'PowerShell installer timeout failure output did not mention the configured timeout.'
+  assert_last_output_mentions_timeout "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS" 'PowerShell installer timeout failure output did not mention the configured timeout.'
   [ ! -e "$target_path" ] || fail "$target_path should not be created when the PowerShell installer download times out."
 }
 

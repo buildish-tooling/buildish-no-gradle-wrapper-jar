@@ -139,7 +139,7 @@ jobs:
         shell: pwsh
         env:
           GNUPG_WINDOWS_INSTALLER_URL: https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.18_20260224.exe
-          # See ../signatures/README.md for details on the pinned GnuPG release-signing public keys.
+          # See ../signatures/README.md for details on the pinned allowed GnuPG release-signing public key.
           GNUPG_WINDOWS_INSTALLER_SIGNATURE_PATH: .github/signatures/gnupg-w32-2.5.18_20260224.exe.sig
           GNUPG_WINDOWS_SIGNATURE_KEY_PATH: .github/signatures/signature_key.asc
           GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT: 6DAA6E64A76D2840571B4902528897B826403ADA
@@ -171,9 +171,10 @@ jobs:
           # launcher verification, but this CI bootstrap step only needs a
           # temporary verifier for the pinned detached signature below.
           Invoke-WebRequest -Uri $env:GNUPG_WINDOWS_INSTALLER_URL -OutFile $archive
-          & gpg --homedir $bootstrapGpgHome --batch --import $signatureKeyPath *> $null
+          $importOutput = & gpg --homedir $bootstrapGpgHome --batch --import $signatureKeyPath 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to import the pinned GnuPG release-signing public keys.'
+            $importOutput | ForEach-Object { Write-Host $_ }
+            throw 'Unable to import the pinned GnuPG release-signing public key.'
           }
 
           $verificationOutput = & gpg --homedir $bootstrapGpgHome --batch --status-fd 1 --verify $signaturePath $archive 2>&1
