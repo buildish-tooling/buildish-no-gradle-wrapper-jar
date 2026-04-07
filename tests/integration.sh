@@ -954,6 +954,40 @@ exercise_powershell_helper_download_timeout_failure() {
   [ ! -e "$sha_path" ] || fail "PowerShell helper should not publish a timed-out checksum download into '$sha_path'."
 }
 
+exercise_helper_symlink_rejection() {
+  project_dir=$1
+  version=$2
+  helper_kind=$3
+  target_kind=$4
+  symlink_target_root="$project_dir/external-symlink-targets"
+
+  mkdir -p "$symlink_target_root"
+
+  case "$target_kind" in
+    sha256)
+      target_path="$project_dir/gradle/wrapper/gradle-wrapper-$version.sha256"
+      symlink_target_path="$symlink_target_root/gradle-wrapper-$version.sha256"
+      log "exercising $helper_kind helper symlinked-checksum rejection in '$project_dir' for Gradle '$version'"
+      ;;
+    init-script)
+      target_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+      symlink_target_path="$symlink_target_root/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+      log "exercising $helper_kind helper symlinked-init-script rejection in '$project_dir'"
+      ;;
+    *)
+      fail "unknown symlink rejection target '$target_kind'"
+      ;;
+  esac
+
+  cp "$target_path" "$symlink_target_path"
+  rm -f "$target_path"
+  ln -s "$symlink_target_path" "$target_path"
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_failed "$helper_kind helper unexpectedly accepted a symlinked $target_kind path."
+  assert_last_output_contains 'must not be a symbolic link' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
+}
+
 exercise_helper_invalid_distribution_failure() {
   project_dir=$1
   helper_kind=$2
@@ -1584,6 +1618,12 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-oversized-wrapper-jar-download"
   exercise_helper_oversized_download_failure "$scenario_root/posix-oversized-wrapper-jar-download" "$posix_version" posix jar
 
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-symlinked-sha256"
+  exercise_helper_symlink_rejection "$scenario_root/posix-symlinked-sha256" "$posix_version" posix sha256
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-symlinked-init-script"
+  exercise_helper_symlink_rejection "$scenario_root/posix-symlinked-init-script" "$posix_version" posix init-script
+
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-properties"
   exercise_helper_missing_properties_failure "$scenario_root/posix-missing-properties" posix
 
@@ -1619,6 +1659,12 @@ run_helper_edge_case_suite() {
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-oversized-wrapper-jar-download"
   exercise_helper_oversized_download_failure "$scenario_root/powershell-oversized-wrapper-jar-download" "$powershell_version" powershell jar
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-symlinked-sha256"
+  exercise_helper_symlink_rejection "$scenario_root/powershell-symlinked-sha256" "$powershell_version" powershell sha256
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-symlinked-init-script"
+  exercise_helper_symlink_rejection "$scenario_root/powershell-symlinked-init-script" "$powershell_version" powershell init-script
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-download-timeout"
   exercise_powershell_helper_download_timeout_failure "$scenario_root/powershell-download-timeout" "$powershell_version"

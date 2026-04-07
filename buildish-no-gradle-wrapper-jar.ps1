@@ -231,6 +231,30 @@ function Write-BuildishNoGradleWrapperJarAsciiFile {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::ASCII)
 }
 
+# Mirror the installer's symlink / reparse-point confinement at runtime so the
+# helper never trusts cached metadata or local helper paths through indirection.
+function Test-BuildishNoGradleWrapperJarReparsePoint {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $false
+  }
+
+  $item = Get-Item -LiteralPath $Path -Force
+  return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+function Assert-BuildishNoGradleWrapperJarNotReparsePoint {
+  param(
+    [string]$Path,
+    [string]$Label
+  )
+
+  if (Test-BuildishNoGradleWrapperJarReparsePoint -Path $Path) {
+    throw "$Label must not be a symbolic link: '$Path'."
+  }
+}
+
 # Reject unexpectedly large files before reading or trusting them. This constrains
 # resource usage for both cached inputs and newly downloaded artifacts.
 function Assert-BuildishMaxFileSize {
@@ -300,6 +324,7 @@ function ConvertTo-BuildishWindowsCommandLineArgument {
 function Get-BuildishNoGradleWrapperJarInjectedInitScriptArguments {
   param([string]$InitScriptPath)
 
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $InitScriptPath -Label 'Buildish init script'
   if (-not (Test-Path -LiteralPath $InitScriptPath -PathType Leaf)) {
     return ''
   }
@@ -319,6 +344,7 @@ function Get-BuildishNoGradleWrapperJarInjectedInitScriptArguments {
 function Get-BuildishNoGradleWrapperJarExpectedSha256 {
   param([string]$Path)
 
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $Path -Label 'wrapper checksum'
   Assert-BuildishMaxFileSize -Path $Path -MaxBytes $BuildishMetadataMaxBytes -Label 'wrapper checksum'
   $checksum = (Get-Content -LiteralPath $Path -Raw).Trim().ToLowerInvariant()
   if ($checksum -notmatch '^[0-9a-f]{64}$') {
@@ -354,6 +380,7 @@ function Assert-BuildishNoGradleWrapperJarDownloadedChecksumFile {
 function Test-BuildishNoGradleWrapperJarSignatureFile {
   param([string]$Path)
 
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $Path -Label 'wrapper detached signature'
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     return $false
   }
@@ -387,6 +414,8 @@ function Save-BuildishNoGradleWrapperJarDownloadedFile {
     [scriptblock]$Validator
   )
 
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $GradleWrapperDirectory -Label 'Gradle wrapper directory'
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $Path -Label $Label
   $tempPath = New-BuildishNoGradleWrapperJarTempPath -Directory $GradleWrapperDirectory
   $handler = $null
   $client = $null
@@ -466,6 +495,7 @@ function Ensure-BuildishNoGradleWrapperJarMetadataFile {
     [scriptblock]$ValidateDownloaded
   )
 
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $Path -Label $Label
   if (& $IsValid $Path) {
     return
   }
@@ -592,6 +622,8 @@ try {
   $GradleWrapperDirectory = Join-Path -Path $env:APP_HOME -ChildPath 'gradle\wrapper'
   $GradlePropertiesPath = Join-Path -Path $GradleWrapperDirectory -ChildPath 'gradle-wrapper.properties'
   $GradleWrapperJarPath = Join-Path -Path $GradleWrapperDirectory -ChildPath 'gradle-wrapper.jar'
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $GradleWrapperDirectory -Label 'Gradle wrapper directory'
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $GradlePropertiesPath -Label 'gradle-wrapper.properties'
 
   if (-not (Test-Path -LiteralPath $GradlePropertiesPath -PathType Leaf)) {
     throw "Gradle wrapper properties file was not found at '$GradlePropertiesPath'."
@@ -627,6 +659,7 @@ try {
   $GradleWrapperJarUrl = "https://raw.githubusercontent.com/gradle/gradle/v$GradleSourceVersion/gradle/wrapper/gradle-wrapper.jar"
   $GradleInitScriptPath = Join-Path -Path $env:APP_HOME -ChildPath 'gradle\buildish-no-gradle-wrapper-jar.init.gradle.kts'
   $wrapperJarReady = $false
+  Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $GradleWrapperJarPath -Label 'gradle-wrapper.jar'
 
   # Metadata is cached project-locally so repeated runs can validate an existing
   # wrapper JAR without always redownloading the side files.

@@ -50,6 +50,13 @@ buildish_no_gradle_wrapper_jar_require_command() {
     buildish_no_gradle_wrapper_jar_fail "Required command '$1' was not found on PATH."
 }
 
+# Reject symlink indirection for runtime-managed project files. The installer
+# already refuses to patch through symlinks; the runtime helper should enforce
+# the same confinement before it reads or replaces cached metadata and JARs.
+buildish_no_gradle_wrapper_jar_assert_not_symlink() {
+  [ ! -L "$1" ] || buildish_no_gradle_wrapper_jar_fail "$2 must not be a symbolic link: '$1'."
+}
+
 # Return the lowercase SHA-256 hex digest of a file using whichever common tool is
 # available on the host. The helper needs this before it can trust an existing or
 # freshly downloaded wrapper JAR.
@@ -124,6 +131,8 @@ buildish_no_gradle_wrapper_jar_download_to_file() {
   download_url=$2
   resource_label=$3
   max_size_bytes=$4
+  buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_WRAPPER_DIR" 'Gradle wrapper directory'
+  buildish_no_gradle_wrapper_jar_assert_not_symlink "$target_path" "$resource_label"
   temp_path=$(mktemp "${BUILDISH_HELPER_WRAPPER_DIR}/.buildish-no-gradle-wrapper-jar.XXXXXX") ||
     buildish_no_gradle_wrapper_jar_fail "Unable to create a temporary file for ${resource_label}."
 
@@ -138,6 +147,7 @@ buildish_no_gradle_wrapper_jar_download_to_file() {
 # while rejecting malformed content that should be re-downloaded.
 buildish_no_gradle_wrapper_jar_normalize_checksum_file() {
   checksum_path=$1
+  buildish_no_gradle_wrapper_jar_assert_not_symlink "$checksum_path" 'wrapper checksum'
   buildish_no_gradle_wrapper_jar_file_within_max_size "$checksum_path" "$BUILDISH_HELPER_MAX_METADATA_BYTES" || return 1
   normalized_checksum=$(tr -d '\r\n' < "$checksum_path" | tr '[:upper:]' '[:lower:]')
   if ! printf '%s' "$normalized_checksum" | grep -E '^[0-9a-f]{64}$' >/dev/null 2>&1; then
@@ -152,6 +162,7 @@ buildish_no_gradle_wrapper_jar_normalize_checksum_file() {
 # quick structural sanity check before the file is cached.
 buildish_no_gradle_wrapper_jar_validate_signature_file() {
   signature_path=$1
+  buildish_no_gradle_wrapper_jar_assert_not_symlink "$signature_path" 'wrapper detached signature'
   buildish_no_gradle_wrapper_jar_file_within_max_size "$signature_path" "$BUILDISH_HELPER_MAX_METADATA_BYTES" || return 1
   first_line=$(sed -n '1p' "$signature_path")
   [ "$first_line" = '-----BEGIN PGP SIGNATURE-----' ]
@@ -164,6 +175,8 @@ buildish_no_gradle_wrapper_jar_ensure_cached_file() {
   max_size_bytes=$4
   validator_function=$5
   invalid_download_message=$6
+
+  buildish_no_gradle_wrapper_jar_assert_not_symlink "$target_path" "$resource_label"
 
   if [ -f "$target_path" ] && "$validator_function" "$target_path"; then
     return 0
@@ -319,6 +332,8 @@ BUILDISH_HELPER_INIT_SCRIPT_PATH="${APP_HOME}/gradle/buildish-no-gradle-wrapper-
 BUILDISH_HELPER_MAX_METADATA_BYTES=65536
 BUILDISH_HELPER_MAX_JAR_BYTES=10485760
 
+buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_WRAPPER_DIR" 'Gradle wrapper directory'
+
 # If the project-local init script exists, prepend it once. The init script hooks
 # the Gradle `Wrapper` task so that when Gradle regenerates `gradlew` or
 # `gradlew.bat`, the launcher patches added by this tool are restored.
@@ -327,6 +342,7 @@ BUILDISH_HELPER_MAX_JAR_BYTES=10485760
 # `--init-script <path>` / `-I <path>` forms plus their compact equivalents and
 # only injects the local init script when that exact path is not already present.
 buildish_no_gradle_wrapper_jar_has_init_script_arg=0
+buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_INIT_SCRIPT_PATH" 'Buildish init script'
 if [ -f "$BUILDISH_HELPER_INIT_SCRIPT_PATH" ]; then
   buildish_no_gradle_wrapper_jar_previous_arg=''
   for buildish_no_gradle_wrapper_jar_arg do
@@ -356,6 +372,7 @@ if [ -f "$BUILDISH_HELPER_INIT_SCRIPT_PATH" ]; then
   fi
 fi
 
+buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_PROPERTIES_PATH" 'gradle-wrapper.properties'
 [ -f "$BUILDISH_HELPER_PROPERTIES_PATH" ] ||
   buildish_no_gradle_wrapper_jar_fail "Gradle wrapper properties file was not found at '${BUILDISH_HELPER_PROPERTIES_PATH}'."
 
@@ -391,6 +408,8 @@ BUILDISH_HELPER_JAR_URL="https://raw.githubusercontent.com/gradle/gradle/v${BUIL
 # existing wrapper JAR without immediately redownloading side files.
 buildish_no_gradle_wrapper_jar_ensure_metadata_files
 expected_wrapper_checksum=$(tr -d '\r\n' < "$BUILDISH_HELPER_SHA256_PATH" | tr '[:upper:]' '[:lower:]')
+
+buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_JAR_PATH" 'gradle-wrapper.jar'
 
 # Fast path: if the project already has a wrapper JAR with the expected checksum
 # and a valid detached signature, leave it in place and return immediately.
