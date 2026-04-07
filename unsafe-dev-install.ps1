@@ -17,11 +17,12 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$BuildishUnsafeDevToolName = 'buildish-no-gradle-wrapper-jar unsafe-dev-install'
-$BuildishUnsafeDevDefaultBaseUrl = 'https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
-$BuildishUnsafeDevBaseUrl = if ([string]::IsNullOrWhiteSpace($env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL)) { $BuildishUnsafeDevDefaultBaseUrl } else { $env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL }
+$Tool = 'buildish-no-gradle-wrapper-jar unsafe-dev-install'
+$DefaultBaseUrl = 'https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
+$BaseUrl = if ([string]::IsNullOrWhiteSpace($env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL)) { $DefaultBaseUrl } else { $env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL }
+$Files = @('install.ps1', 'buildish-no-gradle-wrapper-jar.sh', 'buildish-no-gradle-wrapper-jar.ps1', 'buildish-no-gradle-wrapper-jar.init.gradle.kts')
 
-function Get-BuildishUnsafeDevCiMarker {
+function Get-CiMarker {
   foreach ($marker in @('CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'JENKINS_URL', 'JENKINS_HOME', 'BUILDKITE', 'TEAMCITY_VERSION', 'CIRCLECI', 'TRAVIS', 'TF_BUILD', 'BITBUCKET_BUILD_NUMBER', 'APPVEYOR', 'DRONE', 'SYSTEM_COLLECTIONURI')) {
     $value = [System.Environment]::GetEnvironmentVariable($marker)
     if ($marker -eq 'CI') {
@@ -41,78 +42,47 @@ function Get-BuildishUnsafeDevCiMarker {
   return ''
 }
 
-function Save-BuildishUnsafeDevDownloadedFile {
-  param(
-    [string]$Directory,
-    [string]$FileName
-  )
-
-  $targetPath = Join-Path -Path $Directory -ChildPath $FileName
-  try {
-    Invoke-WebRequest -Uri "$BuildishUnsafeDevBaseUrl/$FileName" -OutFile $targetPath | Out-Null
-  } catch {
-    Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
-    throw "Unable to download '$FileName' from '$BuildishUnsafeDevBaseUrl/$FileName'."
-  }
-}
-
-$acknowledgedUnsafeMode = $false
-$parsedPositionalArgs = [System.Collections.Generic.List[string]]::new()
-$parsedArgIndex = 0
-while ($parsedArgIndex -lt $args.Count) {
-  $parsedArg = $args[$parsedArgIndex]
-  if ($parsedArg -eq '--yes-i-know-this-is-unsafe') {
-    $acknowledgedUnsafeMode = $true
-    $parsedArgIndex++
-  } elseif ($parsedArg -eq '--') {
-    $parsedArgIndex++
-    while ($parsedArgIndex -lt $args.Count) {
-      [void]$parsedPositionalArgs.Add($args[$parsedArgIndex])
-      $parsedArgIndex++
-    }
-    break
-  } elseif ($parsedArg.StartsWith('-')) {
-    Write-Error "${BuildishUnsafeDevToolName}: Unknown option '$parsedArg'."
-    exit 1
-  } else {
-    [void]$parsedPositionalArgs.Add($parsedArg)
-    $parsedArgIndex++
-  }
-}
-
-if (-not $acknowledgedUnsafeMode) {
-  Write-Error "${BuildishUnsafeDevToolName}: Refusing to run without --yes-i-know-this-is-unsafe. This script downloads and executes unverified content from the current development branch and is not suitable for CI, automation, or secret-bearing environments."
+if ($args.Count -eq 0 -or $args[0] -ne '--yes-i-know-this-is-unsafe') {
+  Write-Error "${Tool}: Refusing to run without --yes-i-know-this-is-unsafe. This script downloads and executes unverified content from the current development branch and is not suitable for CI, automation, or secret-bearing environments."
   exit 1
 }
 
-if ($parsedPositionalArgs.Count -gt 1) {
-  Write-Error "${BuildishUnsafeDevToolName}: Expected zero or one positional argument: the target project directory."
+if ($args.Count -gt 2) {
+  Write-Error "${Tool}: Expected the unsafe acknowledgement flag followed by zero or one positional argument: the target project directory."
   exit 1
 }
 
-$ciMarker = Get-BuildishUnsafeDevCiMarker
+$ciMarker = Get-CiMarker
 if (-not [string]::IsNullOrWhiteSpace($ciMarker)) {
-  Write-Error "${BuildishUnsafeDevToolName}: Refusing to run because the CI marker '$ciMarker' is set. This script is not suitable for CI environments, automation, or secret-bearing environments."
+  Write-Error "${Tool}: Refusing to run because the CI marker '$ciMarker' is set. This script is not suitable for CI environments, automation, or secret-bearing environments."
   exit 1
 }
 
-Write-Warning "${BuildishUnsafeDevToolName}: This script downloads and executes unverified content from the current development branch."
-Write-Warning "${BuildishUnsafeDevToolName}: Use it only when you intentionally trust the current branch contents."
-Write-Warning "${BuildishUnsafeDevToolName}: It is not suitable for CI, automation, or environments with secrets."
+Write-Warning (@"
+${Tool}: This script downloads and executes unverified content from the current development branch.
+${Tool}: Use it only when you intentionally trust the current branch contents.
+${Tool}: It is not suitable for CI, automation, or environments with secrets.
+"@).TrimEnd()
 
-$targetDirectory = if ($parsedPositionalArgs.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace($parsedPositionalArgs[0])) { $parsedPositionalArgs[0] } else { (Get-Location).Path }
+$targetDirectory = if ($args.Count -eq 2 -and -not [string]::IsNullOrWhiteSpace($args[1])) { $args[1] } else { (Get-Location).Path }
 $temporaryDirectory = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-unsafe-dev-install.$([System.Guid]::NewGuid().ToString('N'))"
 
 try {
   New-Item -ItemType Directory -Path $temporaryDirectory -Force | Out-Null
-  foreach ($fileName in @('install.ps1', 'buildish-no-gradle-wrapper-jar.sh', 'buildish-no-gradle-wrapper-jar.ps1', 'buildish-no-gradle-wrapper-jar.init.gradle.kts')) {
-    Save-BuildishUnsafeDevDownloadedFile -Directory $temporaryDirectory -FileName $fileName
+  foreach ($fileName in $Files) {
+    $targetPath = Join-Path -Path $temporaryDirectory -ChildPath $fileName
+    try {
+      Invoke-WebRequest -Uri "$BaseUrl/$fileName" -OutFile $targetPath | Out-Null
+    } catch {
+      Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
+      throw "Unable to download '$fileName' from '$BaseUrl/$fileName'."
+    }
   }
 
   & (Join-Path -Path $temporaryDirectory -ChildPath 'install.ps1') --trusted-source-dir $temporaryDirectory $targetDirectory
   exit $LASTEXITCODE
 } catch {
-  Write-Error "${BuildishUnsafeDevToolName}: $($_.Exception.Message)"
+  Write-Error "${Tool}: $($_.Exception.Message)"
   exit 1
 } finally {
   Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue

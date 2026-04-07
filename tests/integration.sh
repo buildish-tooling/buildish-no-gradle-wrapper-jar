@@ -246,15 +246,20 @@ trusted_fingerprint = sys.argv[5]
 public_key = Path(sys.argv[6]).read_text().rstrip('\n')
 text = template_path.read_text()
 
+drop_pattern = r'(?ms)^# __BUILDISH_BOOTSTRAP_INSTALL_DROP_START__\n.*?^# __BUILDISH_BOOTSTRAP_INSTALL_DROP_END__\n?'
+text, drop_count = re.subn(drop_pattern, '', text, count=1)
+if drop_count != 1:
+    raise SystemExit(1)
+
 if bootstrap_kind == 'posix':
     replacements = {
-        r"^BUILDISH_BOOTSTRAP_INSTALL_BASE_URL=.*$": f"BUILDISH_BOOTSTRAP_INSTALL_BASE_URL='{base_url}'",
-        r"^BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_FINGERPRINT=.*$": f"BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_FINGERPRINT='{trusted_fingerprint}'",
+        r"^BASE_URL=.*$": f"BASE_URL='{base_url}'",
+        r"^FINGERPRINT=.*$": f"FINGERPRINT='{trusted_fingerprint}'",
     }
 elif bootstrap_kind == 'powershell':
     replacements = {
-        r'^\$BuildishBootstrapInstallBaseUrl = .*$': f'$BuildishBootstrapInstallBaseUrl = "{base_url}"',
-        r'^\$BuildishBootstrapInstallTrustedFingerprint = .*$': f'$BuildishBootstrapInstallTrustedFingerprint = "{trusted_fingerprint}"',
+        r'^\$BaseUrl = .*$': f'$BaseUrl = "{base_url}"',
+        r'^\$Fingerprint = .*$': f'$Fingerprint = "{trusted_fingerprint}"',
     }
 else:
     raise SystemExit(1)
@@ -1114,7 +1119,7 @@ exercise_bootstrap_template_guard_failure() {
   esac
 
   assert_last_command_failed "$bootstrap_kind bootstrap installer unexpectedly ran even though the repository copy is an unrendered template."
-  assert_last_output_contains 'unrendered release template' "$bootstrap_kind bootstrap installer failure output did not mention the release-template guard."
+  assert_last_output_contains 'release placeholders' "$bootstrap_kind bootstrap installer failure output did not mention the release-placeholder guard."
   assert_helper_files_absent "$project_dir"
 }
 
