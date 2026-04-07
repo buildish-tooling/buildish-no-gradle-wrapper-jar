@@ -28,7 +28,7 @@ This page is the user-facing summary of the current security and trust model for
 
 For the planned hardened installer delivery model, see:
 
-- [Secure installer bootstrap approach](secure-installer-approach/)
+- [Secure installer bootstrap approach](../secure-installer-approach/)
 
 For the full repository-level assessment, findings, and threat-model answers, see:
 
@@ -69,7 +69,7 @@ That means the remaining open work is not inside `install.*` anymore. The reposi
 tiny, reviewable `bootstrap-install.*` verifier scripts, but the checked-in copies are release
 templates on purpose. They fail closed until a release step renders hard-coded release URLs and the
 pinned signing-key material described in the dedicated
-[`secure-installer-approach`](secure-installer-approach/) page.
+[`secure-installer-approach`](../secure-installer-approach/) page.
 
 The same warning applies to trusted-input overrides:
 
