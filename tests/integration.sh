@@ -50,6 +50,9 @@ TEST_HTTP_SERVER_PID=''
 TEST_HTTP_SERVER_PORT=''
 TEST_HTTP_SERVER_LOG=''
 TEST_HTTP_SERVER_PORT_FILE=''
+BOOTSTRAP_TEST_GPG_HOME=''
+BOOTSTRAP_TEST_SIGNER_FINGERPRINT=''
+BOOTSTRAP_TEST_PUBLIC_KEY_PATH=''
 
 run_and_capture() {
   output_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-test.XXXXXX")
@@ -206,6 +209,91 @@ path.write_bytes(prefix + (b'a' * (size_bytes - len(prefix))))
 PY
 }
 
+create_bootstrap_signing_fixture() {
+  signing_root=$1
+  BOOTSTRAP_TEST_GPG_HOME="$signing_root/gpg-home"
+  BOOTSTRAP_TEST_PUBLIC_KEY_PATH="$signing_root/trusted-bootstrap-key.asc"
+
+  mkdir -p "$BOOTSTRAP_TEST_GPG_HOME"
+  gpg --batch --homedir "$BOOTSTRAP_TEST_GPG_HOME" --pinentry-mode loopback --passphrase '' --quick-gen-key 'Buildish Bootstrap Integration Test <bootstrap@example.invalid>' rsa3072 sign 0 >/dev/null 2>&1 ||
+    fail 'unable to generate the bootstrap integration signing key.'
+
+  BOOTSTRAP_TEST_SIGNER_FINGERPRINT=$(gpg --batch --homedir "$BOOTSTRAP_TEST_GPG_HOME" --list-keys --with-colons --fingerprint | awk -F: '$1 == "fpr" { print tolower($10); exit }')
+  [ -n "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" ] || fail 'unable to determine the bootstrap integration signing-key fingerprint.'
+
+  gpg --batch --homedir "$BOOTSTRAP_TEST_GPG_HOME" --armor --export "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" > "$BOOTSTRAP_TEST_PUBLIC_KEY_PATH" ||
+    fail 'unable to export the bootstrap integration public key.'
+}
+
+render_bootstrap_release_script() {
+  template_path=$1
+  output_path=$2
+  bootstrap_kind=$3
+  base_url=$4
+  trusted_fingerprint=$5
+  public_key_path=$6
+
+  python3 - <<'PY' "$template_path" "$output_path" "$bootstrap_kind" "$base_url" "$trusted_fingerprint" "$public_key_path" || exit 1
+from pathlib import Path
+import re
+import sys
+
+template_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+bootstrap_kind = sys.argv[3]
+base_url = sys.argv[4]
+trusted_fingerprint = sys.argv[5]
+public_key = Path(sys.argv[6]).read_text().rstrip('\n')
+text = template_path.read_text()
+
+if bootstrap_kind == 'posix':
+    replacements = {
+        r"^BUILDISH_BOOTSTRAP_INSTALL_BASE_URL=.*$": f"BUILDISH_BOOTSTRAP_INSTALL_BASE_URL='{base_url}'",
+        r"^BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_FINGERPRINT=.*$": f"BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_FINGERPRINT='{trusted_fingerprint}'",
+    }
+elif bootstrap_kind == 'powershell':
+    replacements = {
+        r'^\$BuildishBootstrapInstallBaseUrl = .*$': f'$BuildishBootstrapInstallBaseUrl = "{base_url}"',
+        r'^\$BuildishBootstrapInstallTrustedFingerprint = .*$': f'$BuildishBootstrapInstallTrustedFingerprint = "{trusted_fingerprint}"',
+    }
+else:
+    raise SystemExit(1)
+
+for pattern, replacement in replacements.items():
+    text, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise SystemExit(1)
+
+if '__BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_PUBLIC_KEY__' not in text:
+    raise SystemExit(1)
+text = text.replace('__BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_PUBLIC_KEY__', public_key)
+output_path.write_text(text)
+PY
+
+  case "$bootstrap_kind" in
+    posix) chmod +x "$output_path" ;;
+  esac
+}
+
+write_bootstrap_manifest() {
+  server_root=$1
+  manifest_path=$2
+  shift 2
+
+  : > "$manifest_path"
+  for file_name in "$@"; do
+    printf '%s  %s\n' "$(hash_file "$server_root/$file_name")" "$file_name" >> "$manifest_path"
+  done
+}
+
+sign_bootstrap_manifest() {
+  manifest_path=$1
+  signature_path=$2
+
+  gpg --batch --homedir "$BOOTSTRAP_TEST_GPG_HOME" --pinentry-mode loopback --passphrase '' --armor --local-user "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" --output "$signature_path" --detach-sign "$manifest_path" >/dev/null 2>&1 ||
+    fail "unable to sign bootstrap payload manifest '$manifest_path'."
+}
+
 stop_test_http_server() {
   if [ -n "$TEST_HTTP_SERVER_PID" ]; then
     kill "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1 || true
@@ -301,6 +389,71 @@ PY
   fail "unable to start the stalling HTTP test server. log=$log_contents"
 }
 
+prepare_bootstrap_release_fixture() {
+  server_root=$1
+  bootstrap_kind=$2
+  manifest_mode=$3
+  signature_mode=$4
+
+  rm -rf "$server_root"
+  mkdir -p "$server_root"
+
+  case "$bootstrap_kind" in
+    posix)
+      bootstrap_template_path="$TOOL_DIR/bootstrap-install.sh"
+      bootstrap_output_path="$server_root/bootstrap-install.sh"
+      installer_file='install.sh'
+      manifest_name='bootstrap-install-posix.sha256'
+      signature_name='bootstrap-install-posix.sha256.asc'
+      ;;
+    powershell)
+      bootstrap_template_path="$TOOL_DIR/bootstrap-install.ps1"
+      bootstrap_output_path="$server_root/bootstrap-install.ps1"
+      installer_file='install.ps1'
+      manifest_name='bootstrap-install-powershell.sha256'
+      signature_name='bootstrap-install-powershell.sha256.asc'
+      ;;
+    *)
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  cp "$TOOL_DIR/$installer_file" "$server_root/$installer_file"
+  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.sh" "$server_root/buildish-no-gradle-wrapper-jar.sh"
+  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.ps1" "$server_root/buildish-no-gradle-wrapper-jar.ps1"
+  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" "$server_root/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+
+  case "$manifest_mode" in
+    complete)
+      manifest_files="$installer_file buildish-no-gradle-wrapper-jar.sh buildish-no-gradle-wrapper-jar.ps1 buildish-no-gradle-wrapper-jar.init.gradle.kts"
+      ;;
+    missing-helper)
+      manifest_files="$installer_file buildish-no-gradle-wrapper-jar.sh buildish-no-gradle-wrapper-jar.init.gradle.kts"
+      ;;
+    *)
+      fail "unknown manifest mode '$manifest_mode'"
+      ;;
+  esac
+
+  # shellcheck disable=SC2086
+  write_bootstrap_manifest "$server_root" "$server_root/$manifest_name" $manifest_files
+  sign_bootstrap_manifest "$server_root/$manifest_name" "$server_root/$signature_name"
+
+  case "$signature_mode" in
+    valid)
+      ;;
+    tampered)
+      printf '%s\n' '# tampered after signing' >> "$server_root/$manifest_name"
+      ;;
+    *)
+      fail "unknown signature mode '$signature_mode'"
+      ;;
+  esac
+
+  start_static_http_server "$server_root"
+  render_bootstrap_release_script "$bootstrap_template_path" "$bootstrap_output_path" "$bootstrap_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT" "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" "$BOOTSTRAP_TEST_PUBLIC_KEY_PATH"
+}
+
 copy_project_fixture() {
   source_dir=$1
   target_dir=$2
@@ -345,6 +498,13 @@ assert_helper_files() {
   test -f "$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh" || fail 'missing POSIX helper file.'
   test -f "$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1" || fail 'missing PowerShell helper file.'
   test -f "$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts" || fail 'missing Gradle init script.'
+}
+
+assert_helper_files_absent() {
+  project_dir=$1
+  [ ! -e "$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh" ] || fail 'unexpected POSIX helper file was installed.'
+  [ ! -e "$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1" ] || fail 'unexpected PowerShell helper file was installed.'
+  [ ! -e "$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts" ] || fail 'unexpected Gradle init script was installed.'
 }
 
 file_has_exact_line() {
@@ -579,35 +739,41 @@ run_gradle_with_init_script_capture() {
 run_posix_installer_capture() {
   project_dir=$1
   log "installing POSIX helper into '$project_dir'"
-  run_and_capture sh "$TOOL_DIR/install.sh" --source-dir "$TOOL_DIR" "$project_dir"
+  run_and_capture sh "$TOOL_DIR/install.sh" --trusted-source-dir "$TOOL_DIR" "$project_dir"
 }
 
 run_powershell_installer_capture() {
   project_dir=$1
   log "installing PowerShell helper into '$project_dir'"
-  run_and_capture pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" --source-dir "$TOOL_DIR" "$project_dir"
+  run_and_capture pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" --trusted-source-dir "$TOOL_DIR" "$project_dir"
 }
 
-run_posix_installer_capture_with_base_url() {
+run_posix_unsafe_dev_installer_capture() {
   project_dir=$1
-  base_url=$2
-  log "installing POSIX helper into '$project_dir' from '$base_url'"
-  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL="$base_url" sh "$TOOL_DIR/install.sh" "$project_dir"
+  shift
+  log "running POSIX unsafe dev installer into '$project_dir'"
+  run_and_capture env "$@" sh "$TOOL_DIR/unsafe-dev-install.sh" --yes-i-know-this-is-unsafe "$project_dir"
 }
 
-run_powershell_installer_capture_with_base_url() {
+run_powershell_unsafe_dev_installer_capture() {
   project_dir=$1
-  base_url=$2
-  log "installing PowerShell helper into '$project_dir' from '$base_url'"
-  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL="$base_url" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
+  shift
+  log "running PowerShell unsafe dev installer into '$project_dir'"
+  run_and_capture env "$@" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/unsafe-dev-install.ps1" --yes-i-know-this-is-unsafe "$project_dir"
 }
 
-run_powershell_installer_capture_with_base_url_and_timeout() {
-  project_dir=$1
-  base_url=$2
-  timeout_seconds=$3
-  log "installing PowerShell helper into '$project_dir' from '$base_url' with timeout ${timeout_seconds}s"
-  run_and_capture env BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL="$base_url" BUILDISH_NO_GRADLE_WRAPPER_JAR_INSTALL_HTTP_TIMEOUT_SECONDS="$timeout_seconds" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
+run_posix_bootstrap_installer_capture() {
+  bootstrap_script_path=$1
+  project_dir=$2
+  log "running POSIX bootstrap installer '$bootstrap_script_path' into '$project_dir'"
+  run_and_capture sh "$bootstrap_script_path" "$project_dir"
+}
+
+run_powershell_bootstrap_installer_capture() {
+  bootstrap_script_path=$1
+  project_dir=$2
+  log "running PowerShell bootstrap installer '$bootstrap_script_path' into '$project_dir'"
+  run_and_capture pwsh -NoLogo -NoProfile -File "$bootstrap_script_path" "$project_dir"
 }
 
 run_posix_helper_direct() {
@@ -813,45 +979,238 @@ exercise_installer_missing_properties_failure() {
   assert_last_output_contains 'was not found' "$installer_kind installer failure output did not mention that gradle-wrapper.properties was missing."
 }
 
-exercise_installer_oversized_tool_download_failure() {
+exercise_installer_requires_trusted_source_dir_failure() {
   project_dir=$1
   installer_kind=$2
-  server_root="$project_dir/installer-download-server"
-  oversized_file_name='buildish-no-gradle-wrapper-jar.sh'
-  target_path="$project_dir/gradle/$oversized_file_name"
 
-  log "exercising $installer_kind installer oversized bootstrap download failure in '$project_dir'"
+  log "exercising $installer_kind installer missing --trusted-source-dir failure in '$project_dir'"
   gradle_init_fixture "$project_dir"
-  rm -rf "$server_root"
-  mkdir -p "$server_root"
-  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.sh" "$server_root/buildish-no-gradle-wrapper-jar.sh"
-  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.ps1" "$server_root/buildish-no-gradle-wrapper-jar.ps1"
-  cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" "$server_root/buildish-no-gradle-wrapper-jar.init.gradle.kts"
-  write_file_with_size "$server_root/$oversized_file_name" $((INSTALLER_MAX_TOOL_FILE_BYTES + 1)) ''
 
-  start_static_http_server "$server_root"
-  "run_${installer_kind}_installer_capture_with_base_url" "$project_dir" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+  case "$installer_kind" in
+    posix)
+      run_and_capture sh "$TOOL_DIR/install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_and_capture pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" "$project_dir"
+      ;;
+    *)
+      fail "unknown installer kind '$installer_kind'"
+      ;;
+  esac
+
+  assert_last_command_failed "$installer_kind installer unexpectedly succeeded without --trusted-source-dir."
+  assert_last_output_contains 'trusted-source-dir is required' "$installer_kind installer failure output did not explain that --trusted-source-dir is mandatory."
+}
+
+exercise_unsafe_dev_installer_requires_acknowledgement_failure() {
+  project_dir=$1
+  installer_kind=$2
+
+  log "exercising $installer_kind unsafe dev installer missing-acknowledgement failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+
+  case "$installer_kind" in
+    posix)
+      run_and_capture sh "$TOOL_DIR/unsafe-dev-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_and_capture pwsh -NoLogo -NoProfile -File "$TOOL_DIR/unsafe-dev-install.ps1" "$project_dir"
+      ;;
+    *)
+      fail "unknown installer kind '$installer_kind'"
+      ;;
+  esac
+
+  assert_last_command_failed "$installer_kind unsafe dev installer unexpectedly succeeded without the unsafe acknowledgement flag."
+  assert_last_output_contains 'yes-i-know-this-is-unsafe' "$installer_kind unsafe dev installer failure output did not mention the mandatory unsafe acknowledgement flag."
+}
+
+exercise_unsafe_dev_installer_ci_barrier_failure() {
+  project_dir=$1
+  installer_kind=$2
+
+  log "exercising $installer_kind unsafe dev installer CI barrier in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+
+  case "$installer_kind" in
+    posix)
+      run_and_capture env CI=true sh "$TOOL_DIR/unsafe-dev-install.sh" --yes-i-know-this-is-unsafe "$project_dir"
+      ;;
+    powershell)
+      run_and_capture env CI=true pwsh -NoLogo -NoProfile -File "$TOOL_DIR/unsafe-dev-install.ps1" --yes-i-know-this-is-unsafe "$project_dir"
+      ;;
+    *)
+      fail "unknown installer kind '$installer_kind'"
+      ;;
+  esac
+
+  assert_last_command_failed "$installer_kind unsafe dev installer unexpectedly ran in a CI-marked environment."
+  assert_last_output_contains 'not suitable for CI environments' "$installer_kind unsafe dev installer failure output did not mention that the script is not suitable for CI environments."
+}
+
+current_environment_looks_like_ci() {
+  for marker in CI GITHUB_ACTIONS GITLAB_CI JENKINS_URL JENKINS_HOME BUILDKITE TEAMCITY_VERSION CIRCLECI TRAVIS TF_BUILD BITBUCKET_BUILD_NUMBER APPVEYOR DRONE SYSTEM_COLLECTIONURI; do
+    eval "value=\${$marker-}"
+    case "$marker:$value" in
+      CI:''|CI:0|CI:false|CI:FALSE|CI:no|CI:NO) continue ;;
+    esac
+    if [ -n "$value" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+exercise_unsafe_dev_installer_success() {
+  project_dir=$1
+  installer_kind=$2
+
+  if current_environment_looks_like_ci; then
+    log "skipping $installer_kind unsafe dev installer success path because the current environment already looks like CI."
+    return 0
+  fi
+
+  log "exercising $installer_kind unsafe dev installer success path in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  start_static_http_server "$TOOL_DIR"
+
+  case "$installer_kind" in
+    posix)
+      run_posix_unsafe_dev_installer_capture "$project_dir" BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL="http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+      ;;
+    powershell)
+      run_powershell_unsafe_dev_installer_capture "$project_dir" BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL="http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown installer kind '$installer_kind'"
+      ;;
+  esac
+
   stop_test_http_server
+  assert_last_command_succeeded "$installer_kind unsafe dev installer failed during the happy-path smoke test."
+  assert_last_output_contains 'downloads and executes unverified content' "$installer_kind unsafe dev installer did not emit the loud unsafe warning banner."
+  assert_helper_files "$project_dir"
+}
 
-  assert_last_command_failed "$installer_kind installer unexpectedly accepted an oversized bootstrap helper download."
-  assert_last_output_contains 'maximum allowed size' "$installer_kind installer failure output did not mention the maximum allowed size for the oversized bootstrap download."
-  [ ! -e "$target_path" ] || fail "$installer_kind installer should not publish an oversized helper file into '$target_path'."
+exercise_bootstrap_template_guard_failure() {
+  project_dir=$1
+  bootstrap_kind=$2
+
+  log "exercising $bootstrap_kind bootstrap installer unrendered-template guard in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+
+  case "$bootstrap_kind" in
+    posix)
+      run_posix_bootstrap_installer_capture "$TOOL_DIR/bootstrap-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_powershell_bootstrap_installer_capture "$TOOL_DIR/bootstrap-install.ps1" "$project_dir"
+      ;;
+    *)
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  assert_last_command_failed "$bootstrap_kind bootstrap installer unexpectedly ran even though the repository copy is an unrendered template."
+  assert_last_output_contains 'unrendered release template' "$bootstrap_kind bootstrap installer failure output did not mention the release-template guard."
+  assert_helper_files_absent "$project_dir"
+}
+
+exercise_bootstrap_signature_failure() {
+  project_dir=$1
+  bootstrap_kind=$2
+  server_root="$project_dir-bootstrap-release"
+
+  log "exercising $bootstrap_kind bootstrap installer detached-signature failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  prepare_bootstrap_release_fixture "$server_root" "$bootstrap_kind" complete tampered
+
+  case "$bootstrap_kind" in
+    posix)
+      run_posix_bootstrap_installer_capture "$server_root/bootstrap-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_powershell_bootstrap_installer_capture "$server_root/bootstrap-install.ps1" "$project_dir"
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  stop_test_http_server
+  assert_last_command_failed "$bootstrap_kind bootstrap installer unexpectedly accepted a tampered manifest signature."
+  assert_last_output_contains 'Detached signature verification failed' "$bootstrap_kind bootstrap installer failure output did not mention detached-signature verification failure."
+  assert_helper_files_absent "$project_dir"
+}
+
+exercise_bootstrap_missing_manifest_entry_failure() {
+  project_dir=$1
+  bootstrap_kind=$2
+  server_root="$project_dir-bootstrap-release"
+
+  log "exercising $bootstrap_kind bootstrap installer missing-manifest-entry failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  prepare_bootstrap_release_fixture "$server_root" "$bootstrap_kind" missing-helper valid
+
+  case "$bootstrap_kind" in
+    posix)
+      run_posix_bootstrap_installer_capture "$server_root/bootstrap-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_powershell_bootstrap_installer_capture "$server_root/bootstrap-install.ps1" "$project_dir"
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  stop_test_http_server
+  assert_last_command_failed "$bootstrap_kind bootstrap installer unexpectedly accepted an incomplete signed payload manifest."
+  assert_last_output_contains 'did not contain exactly one checksum entry' "$bootstrap_kind bootstrap installer failure output did not mention the missing manifest entry."
+  assert_last_output_contains 'buildish-no-gradle-wrapper-jar.ps1' "$bootstrap_kind bootstrap installer failure output did not identify the missing payload file entry."
+  assert_helper_files_absent "$project_dir"
+}
+
+exercise_bootstrap_success() {
+  project_dir=$1
+  bootstrap_kind=$2
+  server_root="$project_dir-bootstrap-release"
+
+  log "exercising $bootstrap_kind bootstrap installer happy path in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  prepare_bootstrap_release_fixture "$server_root" "$bootstrap_kind" complete valid
+
+  case "$bootstrap_kind" in
+    posix)
+      run_posix_bootstrap_installer_capture "$server_root/bootstrap-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_powershell_bootstrap_installer_capture "$server_root/bootstrap-install.ps1" "$project_dir"
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  stop_test_http_server
+  assert_last_command_succeeded "$bootstrap_kind bootstrap installer failed during the happy-path smoke test."
+  assert_installer_distribution_sha_warning_output "$bootstrap_kind bootstrap installer"
+  [ ! -e "$project_dir/gradle/wrapper/gradle-wrapper.jar" ] || fail "$bootstrap_kind bootstrap installer should remove the existing gradle-wrapper.jar via install.*."
+  assert_helper_files "$project_dir"
+  assert_launcher_patches "$project_dir"
+}
+
+exercise_installer_oversized_tool_download_failure() {
+  :
 }
 
 exercise_powershell_installer_download_timeout_failure() {
-  project_dir=$1
-  target_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
-
-  log "exercising PowerShell installer download-timeout failure in '$project_dir'"
-  gradle_init_fixture "$project_dir"
-
-  start_stalling_http_server
-  run_powershell_installer_capture_with_base_url_and_timeout "$project_dir" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT" "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS"
-  stop_test_http_server
-
-  assert_last_command_failed 'PowerShell installer unexpectedly succeeded even though the bootstrap endpoint stalled.'
-  assert_last_output_mentions_timeout "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS" 'PowerShell installer timeout failure output did not mention the configured timeout.'
-  [ ! -e "$target_path" ] || fail "$target_path should not be created when the PowerShell installer download times out."
+  :
 }
 
 exercise_helper_missing_properties_failure() {
@@ -1272,6 +1631,22 @@ run_helper_edge_case_suite() {
   exercise_powershell_helper_init_script_output "$scenario_root/powershell helper with spaces"
 }
 
+run_bootstrap_suite() {
+  test_root=$1
+
+  log "starting bootstrap installer suite (test_root='$test_root')"
+  create_bootstrap_signing_fixture "$test_root/bootstrap-signing"
+
+  exercise_bootstrap_template_guard_failure "$test_root/bootstrap-template-guard-posix" posix
+  exercise_bootstrap_template_guard_failure "$test_root/bootstrap-template-guard-powershell" powershell
+  exercise_bootstrap_signature_failure "$test_root/bootstrap-signature-failure-posix" posix
+  exercise_bootstrap_signature_failure "$test_root/bootstrap-signature-failure-powershell" powershell
+  exercise_bootstrap_missing_manifest_entry_failure "$test_root/bootstrap-missing-entry-posix" posix
+  exercise_bootstrap_missing_manifest_entry_failure "$test_root/bootstrap-missing-entry-powershell" powershell
+  exercise_bootstrap_success "$test_root/bootstrap-success-posix" posix
+  exercise_bootstrap_success "$test_root/bootstrap-success-powershell" powershell
+}
+
 run_default_integration_suite() {
   require_base_commands
   require_command pwsh
@@ -1284,11 +1659,17 @@ run_default_integration_suite() {
   run_powershell_installer_flow "$test_root/powershell-installer"
   run_helper_edge_case_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
   run_init_script_focused_suite "$test_root"
-  exercise_installer_oversized_tool_download_failure "$test_root/posix-installer-oversized-bootstrap" posix
-  exercise_installer_oversized_tool_download_failure "$test_root/powershell-installer-oversized-bootstrap" powershell
-  exercise_powershell_installer_download_timeout_failure "$test_root/powershell-installer-timeout"
+  run_bootstrap_suite "$test_root"
   exercise_installer_missing_properties_failure "$test_root/posix-installer-missing-properties" posix
   exercise_installer_missing_properties_failure "$test_root/powershell-installer-missing-properties" powershell
+  exercise_installer_requires_trusted_source_dir_failure "$test_root/posix-installer-requires-trusted-source-dir" posix
+  exercise_installer_requires_trusted_source_dir_failure "$test_root/powershell-installer-requires-trusted-source-dir" powershell
+  exercise_unsafe_dev_installer_requires_acknowledgement_failure "$test_root/posix-unsafe-dev-requires-ack" posix
+  exercise_unsafe_dev_installer_requires_acknowledgement_failure "$test_root/powershell-unsafe-dev-requires-ack" powershell
+  exercise_unsafe_dev_installer_ci_barrier_failure "$test_root/posix-unsafe-dev-ci-barrier" posix
+  exercise_unsafe_dev_installer_ci_barrier_failure "$test_root/powershell-unsafe-dev-ci-barrier" powershell
+  exercise_unsafe_dev_installer_success "$test_root/posix-unsafe-dev-success" posix
+  exercise_unsafe_dev_installer_success "$test_root/powershell-unsafe-dev-success" powershell
   log 'all helper-tool integration checks passed.'
 }
 

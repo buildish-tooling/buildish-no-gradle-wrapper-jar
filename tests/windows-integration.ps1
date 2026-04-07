@@ -138,7 +138,7 @@ try {
 
   Write-BuildishWindowsTestLog "installing helper into '$projectDirectory'"
   Invoke-BuildishExternal -Label 'install.ps1' -Command {
-    & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --source-dir $ToolDirectory $projectDirectory
+    & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --trusted-source-dir $ToolDirectory $projectDirectory
   }
 
   if (Test-Path -LiteralPath $wrapperJarPath) {

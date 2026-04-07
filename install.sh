@@ -30,15 +30,12 @@ set -eu
 # Security / safety properties:
 #   * existing symlinks are rejected instead of being followed
 #   * file updates go through temporary files and atomic moves where possible
-#   * a trusted local source directory can be supplied via --source-dir for tests
-#     instead of downloading helper files from GitHub
+#   * helper files are only staged from a caller-supplied --trusted-source-dir
+#     because this installer is not meant to establish trust in downloaded bytes
 
 BUILDISH_TOOL_NAME='buildish-no-gradle-wrapper-jar'
-BUILDISH_DEFAULT_BASE_URL='https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
-BUILDISH_BASE_URL=${BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL:-$BUILDISH_DEFAULT_BASE_URL}
-BUILDISH_SOURCE_DIR=''
+BUILDISH_TRUSTED_SOURCE_DIR=''
 BUILDISH_CR=$(printf '\r')
-BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES=262144
 
 # Consistent installer failure prefix.
 buildish_install_fail() {
@@ -67,15 +64,6 @@ buildish_install_make_temp() {
   mktemp "$1/.buildish-no-gradle-wrapper-jar-install.XXXXXX"
 }
 
-buildish_install_file_size() {
-  wc -c < "$1" | tr -d '[:space:]'
-}
-
-buildish_install_file_within_max_size() {
-  actual_size=$(buildish_install_file_size "$1")
-  [ "$actual_size" -le "$2" ]
-}
-
 buildish_install_move_temp_file() {
   temp_path=$1
   target_path=$2
@@ -87,39 +75,8 @@ buildish_install_move_temp_file() {
   fi
 }
 
-# Download one helper file into place via a temp file. The content is not executed
-# until after the move succeeds.
-buildish_install_download_to() {
-  target_path=$1
-  url=$2
-  label=$3
-
-  buildish_install_assert_not_symlink "$target_path" "$label"
-  temp_path=$(buildish_install_make_temp "$GRADLE_DIR") || buildish_install_fail "Unable to create a temporary file for $label."
-  curl_stderr_path="${temp_path}.stderr"
-
-  if ! curl --fail --location --silent --show-error --max-filesize "$BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES" --output "$temp_path" "$url" 2>"$curl_stderr_path"; then
-    curl_output=$(cat "$curl_stderr_path" 2>/dev/null || true)
-    rm -f "$temp_path" "$curl_stderr_path"
-    if printf '%s' "$curl_output" | grep -Fq 'Maximum file size exceeded'; then
-      [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
-      buildish_install_fail "$label exceeded the maximum allowed size of ${BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES} bytes."
-    fi
-    [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
-    buildish_install_fail "Unable to download $label from '$url'."
-  fi
-
-  rm -f "$curl_stderr_path"
-  if ! buildish_install_file_within_max_size "$temp_path" "$BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES"; then
-    rm -f "$temp_path"
-    buildish_install_fail "$label exceeded the maximum allowed size of ${BUILDISH_INSTALL_MAX_TOOL_FILE_BYTES} bytes."
-  fi
-
-  buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to move $label into '$target_path'."
-}
-
-# Local-copy variant used by integration tests and trusted development workflows.
-# This avoids spinning up an HTTP server just to stage the tool files.
+# Local-copy variant used by integration tests and verified bootstrap handoff.
+# The caller is explicitly trusted to provide already-trusted local files.
 buildish_install_copy_to() {
   target_path=$1
   source_path=$2
@@ -138,18 +95,13 @@ buildish_install_copy_to() {
   buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to move $label into '$target_path'."
 }
 
-# Resolve whether a tool file should come from a trusted local checkout or from
-# the canonical GitHub raw URL.
+# Stage one helper file from the already-trusted local source directory.
 buildish_install_stage_tool_file() {
   target_path=$1
   file_name=$2
   label=$3
 
-  if [ -n "${SOURCE_DIR_ABSOLUTE:-}" ]; then
-    buildish_install_copy_to "$target_path" "$SOURCE_DIR_ABSOLUTE/$file_name" "$label"
-  else
-    buildish_install_download_to "$target_path" "$BUILDISH_BASE_URL/$file_name" "$label"
-  fi
+  buildish_install_copy_to "$target_path" "$TRUSTED_SOURCE_DIR_ABSOLUTE/$file_name" "$label"
 }
 
 # Re-emit a possibly multi-line block using a caller-selected newline style so the
@@ -420,20 +372,19 @@ buildish_install_update_gradlew_bat() {
     "$GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE"
 }
 
-buildish_install_require_command curl
 buildish_install_require_command mktemp
 
 # Installer entrypoint validation and derived paths.
-# Parse --source-dir option and the optional positional target-directory argument.
+# Parse --trusted-source-dir option and the optional positional target-directory argument.
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --source-dir)
-      [ "$#" -ge 2 ] || buildish_install_fail '--source-dir requires a path argument.'
-      BUILDISH_SOURCE_DIR=$2
+    --trusted-source-dir)
+      [ "$#" -ge 2 ] || buildish_install_fail '--trusted-source-dir requires a path argument.'
+      BUILDISH_TRUSTED_SOURCE_DIR=$2
       shift 2
       ;;
-    --source-dir=*)
-      BUILDISH_SOURCE_DIR=${1#--source-dir=}
+    --trusted-source-dir=*)
+      BUILDISH_TRUSTED_SOURCE_DIR=${1#--trusted-source-dir=}
       shift
       ;;
     --)
@@ -455,12 +406,10 @@ TARGET_DIR=${1:-.}
 
 TARGET_DIR_ABSOLUTE=$(cd "$TARGET_DIR" >/dev/null 2>&1 && pwd) ||
   buildish_install_fail "Unable to resolve target directory '$TARGET_DIR'."
-if [ -n "$BUILDISH_SOURCE_DIR" ]; then
-  SOURCE_DIR_ABSOLUTE=$(cd "$BUILDISH_SOURCE_DIR" >/dev/null 2>&1 && pwd) ||
-    buildish_install_fail "Unable to resolve local source directory '$BUILDISH_SOURCE_DIR'."
-else
-  SOURCE_DIR_ABSOLUTE=''
-fi
+[ -n "$BUILDISH_TRUSTED_SOURCE_DIR" ] ||
+  buildish_install_fail '--trusted-source-dir is required. This installer only stages already-trusted local files.'
+TRUSTED_SOURCE_DIR_ABSOLUTE=$(cd "$BUILDISH_TRUSTED_SOURCE_DIR" >/dev/null 2>&1 && pwd) ||
+  buildish_install_fail "Unable to resolve trusted local source directory '$BUILDISH_TRUSTED_SOURCE_DIR'."
 GRADLE_DIR=$TARGET_DIR_ABSOLUTE/gradle
 WRAPPER_DIR=$GRADLE_DIR/wrapper
 PROPERTIES_PATH=$WRAPPER_DIR/gradle-wrapper.properties

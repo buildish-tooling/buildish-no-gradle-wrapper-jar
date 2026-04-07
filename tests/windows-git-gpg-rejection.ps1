@@ -73,7 +73,7 @@ try {
       throw "gradle init failed with exit code $LASTEXITCODE."
     }
 
-    & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --source-dir $ToolDirectory $projectDirectory
+    & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --trusted-source-dir $ToolDirectory $projectDirectory
     if ($LASTEXITCODE -ne 0) {
       throw "install.ps1 failed with exit code $LASTEXITCODE."
     }

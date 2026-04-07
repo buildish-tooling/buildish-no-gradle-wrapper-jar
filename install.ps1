@@ -28,33 +28,30 @@ contains the generated wrapper launchers and `gradle-wrapper.properties`. It the
 Safety properties:
   * symlinks / reparse points are rejected rather than followed
   * writes go through temporary files and atomic moves where possible
-  * a trusted local source directory can be supplied via --source-dir for tests
-    instead of downloading helper files from GitHub
+  * helper files are only staged from a caller-supplied --trusted-source-dir
+    because this installer is not meant to establish trust in downloaded bytes
 #>
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $BuildishToolName = 'buildish-no-gradle-wrapper-jar'
-$DefaultBaseUrl = 'https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
-$BaseUrl = if ([string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL)) { $DefaultBaseUrl } else { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_BASE_URL }
-$BuildishInstallMaxToolFileBytes = 256KB
 
-# Parse --source-dir option and the optional positional target-directory argument.
-$parsedSourceDirectory = ''
+# Parse --trusted-source-dir option and the optional positional target-directory argument.
+$parsedTrustedSourceDirectory = ''
 $parsedPositionalArgs = [System.Collections.Generic.List[string]]::new()
 $parsedArgIndex = 0
 while ($parsedArgIndex -lt $args.Count) {
   $parsedArg = $args[$parsedArgIndex]
-  if ($parsedArg -eq '--source-dir') {
+  if ($parsedArg -eq '--trusted-source-dir') {
     if ($parsedArgIndex + 1 -ge $args.Count) {
-      Write-Error "$BuildishToolName install: --source-dir requires a path argument."
+      Write-Error "$BuildishToolName install: --trusted-source-dir requires a path argument."
       exit 1
     }
-    $parsedSourceDirectory = $args[$parsedArgIndex + 1]
+    $parsedTrustedSourceDirectory = $args[$parsedArgIndex + 1]
     $parsedArgIndex += 2
-  } elseif ($parsedArg.StartsWith('--source-dir=')) {
-    $parsedSourceDirectory = $parsedArg.Substring('--source-dir='.Length)
+  } elseif ($parsedArg.StartsWith('--trusted-source-dir=')) {
+    $parsedTrustedSourceDirectory = $parsedArg.Substring('--trusted-source-dir='.Length)
     $parsedArgIndex++
   } elseif ($parsedArg -eq '--') {
     $parsedArgIndex++
@@ -72,7 +69,7 @@ while ($parsedArgIndex -lt $args.Count) {
   }
 }
 
-$SourceDirectory = $parsedSourceDirectory
+$TrustedSourceDirectory = $parsedTrustedSourceDirectory
 $TargetDirectory = if ($parsedPositionalArgs.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($parsedPositionalArgs[0])) { $parsedPositionalArgs[0] } elseif (-not [string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR)) { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR } else { (Get-Location).Path }
 
 # Use UTF-8 without a BOM when rewriting launcher and text files so the output
@@ -89,30 +86,6 @@ function Set-BuildishUtf8NoBomFileText {
 
   [System.IO.File]::WriteAllText($Path, $Content, (Get-BuildishUtf8NoBomEncoding))
 }
-
-function Get-BuildishInstallPositiveIntegerFromEnvironment {
-  param(
-    [string]$EnvironmentVariableName,
-    [int]$DefaultValue,
-    [string]$Label
-  )
-
-  $rawValue = [System.Environment]::GetEnvironmentVariable($EnvironmentVariableName)
-  if ([string]::IsNullOrWhiteSpace($rawValue)) {
-    return $DefaultValue
-  }
-
-  $parsedValue = 0
-  if (-not [int]::TryParse($rawValue, [ref]$parsedValue) -or $parsedValue -le 0) {
-    throw "$Label must be a positive integer, but '$EnvironmentVariableName' was '$rawValue'."
-  }
-
-  return $parsedValue
-}
-
-# Bound installer downloads so helper bootstrap fails closed instead of hanging
-# forever behind broken or maliciously stalling HTTP infrastructure.
-$BuildishInstallHttpTimeoutSeconds = Get-BuildishInstallPositiveIntegerFromEnvironment -EnvironmentVariableName 'BUILDISH_NO_GRADLE_WRAPPER_JAR_INSTALL_HTTP_TIMEOUT_SECONDS' -DefaultValue 60 -Label 'Buildish installer HTTP timeout'
 
 # PowerShell on Windows reports symlinks and junctions as reparse points. The
 # installer rejects them so it never patches through indirection.
@@ -147,37 +120,6 @@ function New-BuildishInstallTempPath {
   return [System.IO.Path]::Combine($Directory, ".buildish-no-gradle-wrapper-jar-install.$([System.IO.Path]::GetRandomFileName())")
 }
 
-function Get-BuildishInstallRemainingTimeout {
-  param(
-    [datetime]$Deadline,
-    [string]$Operation,
-    [string]$TimeoutDescription
-  )
-
-  $remaining = $Deadline - [datetime]::UtcNow
-  if ($remaining -le [System.TimeSpan]::Zero) {
-    throw "$Operation timed out after $TimeoutDescription."
-  }
-
-  return $remaining
-}
-
-function Wait-BuildishInstallTask {
-  param(
-    [System.Threading.Tasks.Task]$Task,
-    [datetime]$Deadline,
-    [string]$Operation,
-    [string]$TimeoutDescription
-  )
-
-  $remaining = Get-BuildishInstallRemainingTimeout -Deadline $Deadline -Operation $Operation -TimeoutDescription $TimeoutDescription
-  if (-not $Task.Wait($remaining)) {
-    throw "$Operation timed out after $TimeoutDescription."
-  }
-
-  return $Task.GetAwaiter().GetResult()
-}
-
 function Add-BuildishBatchHelperArgumentsToExecuteLine {
   param([string]$ExecuteLine)
 
@@ -188,83 +130,8 @@ function Add-BuildishBatchHelperArgumentsToExecuteLine {
   return $ExecuteLine.Substring(0, $ExecuteLine.Length - ' %*'.Length) + ' %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
 }
 
-# Download helper content to a temp file and move it into place only after the
-# transfer succeeds.
-function Save-BuildishDownloadedFile {
-  param(
-    [string]$Path,
-    [string]$Uri,
-    [string]$Label
-  )
-
-  Assert-BuildishNotSymlink -Path $Path -Label $Label
-  $tempPath = New-BuildishInstallTempPath -Directory $GradleDirectory
-  $handler = $null
-  $client = $null
-  $request = $null
-  $response = $null
-  $responseStream = $null
-  $fileStream = $null
-  $timeoutDescription = "$BuildishInstallHttpTimeoutSeconds seconds"
-  $downloadOperation = "Downloading $Label from '$Uri'"
-  $deadline = [datetime]::UtcNow.AddSeconds($BuildishInstallHttpTimeoutSeconds)
-
-  try {
-    $handler = [System.Net.Http.HttpClientHandler]::new()
-    $client = [System.Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [System.TimeSpan]::FromSeconds($BuildishInstallHttpTimeoutSeconds)
-    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
-    $response = Wait-BuildishInstallTask -Task ($client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription
-    $response.EnsureSuccessStatusCode()
-
-    $contentLength = $response.Content.Headers.ContentLength
-    if ($null -ne $contentLength -and $contentLength -gt $BuildishInstallMaxToolFileBytes) {
-      throw "$Label exceeded the maximum allowed size of $BuildishInstallMaxToolFileBytes bytes."
-    }
-
-    $responseStream = Wait-BuildishInstallTask -Task ($response.Content.ReadAsStreamAsync()) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription
-    $fileStream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-    $buffer = New-Object byte[] 81920
-    [long]$totalBytes = 0
-    while (($bytesRead = Wait-BuildishInstallTask -Task ($responseStream.ReadAsync($buffer, 0, $buffer.Length)) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription) -gt 0) {
-      $totalBytes += $bytesRead
-      if ($totalBytes -gt $BuildishInstallMaxToolFileBytes) {
-        throw "$Label exceeded the maximum allowed size of $BuildishInstallMaxToolFileBytes bytes."
-      }
-      $fileStream.Write($buffer, 0, $bytesRead)
-    }
-
-    $fileStream.Dispose()
-    $fileStream = $null
-    $responseStream.Dispose()
-    $responseStream = $null
-    Move-Item -LiteralPath $tempPath -Destination $Path -Force
-  } catch {
-    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
-    throw "Unable to download $Label from '$Uri': $($_.Exception.Message)"
-  } finally {
-    if ($null -ne $fileStream) {
-      $fileStream.Dispose()
-    }
-    if ($null -ne $responseStream) {
-      $responseStream.Dispose()
-    }
-    if ($null -ne $response) {
-      $response.Dispose()
-    }
-    if ($null -ne $request) {
-      $request.Dispose()
-    }
-    if ($null -ne $client) {
-      $client.Dispose()
-    }
-    if ($null -ne $handler) {
-      $handler.Dispose()
-    }
-  }
-}
-
-# Local-copy variant used by integration tests and trusted development flows.
+# Local-copy variant used by integration tests and verified bootstrap handoff.
+# The caller is explicitly trusted to provide already-trusted local files.
 function Save-BuildishCopiedFile {
   param(
     [string]$Path,
@@ -289,8 +156,7 @@ function Save-BuildishCopiedFile {
   }
 }
 
-# Resolve whether a helper file should come from the trusted local source tree or
-# the canonical GitHub raw URL.
+# Stage one helper file from the already-trusted local source tree.
 function Save-BuildishToolFile {
   param(
     [string]$Path,
@@ -298,11 +164,7 @@ function Save-BuildishToolFile {
     [string]$Label
   )
 
-  if ([string]::IsNullOrWhiteSpace($SourceDirectoryAbsolute)) {
-    Save-BuildishDownloadedFile -Path $Path -Uri "$BaseUrl/$FileName" -Label $Label
-  } else {
-    Save-BuildishCopiedFile -Path $Path -SourcePath (Join-Path -Path $SourceDirectoryAbsolute -ChildPath $FileName) -Label $Label
-  }
+  Save-BuildishCopiedFile -Path $Path -SourcePath (Join-Path -Path $TrustedSourceDirectoryAbsolute -ChildPath $FileName) -Label $Label
 }
 
 function Install-BuildishHelperFiles {
@@ -503,9 +365,12 @@ try {
   if (-not (Test-Path -LiteralPath $TargetDirectory -PathType Container)) {
     throw "Target directory does not exist: '$TargetDirectory'."
   }
+  if ([string]::IsNullOrWhiteSpace($TrustedSourceDirectory)) {
+    throw '--trusted-source-dir is required. This installer only stages already-trusted local files.'
+  }
 
   $TargetDirectoryAbsolute = (Resolve-Path -LiteralPath $TargetDirectory).Path
-  $SourceDirectoryAbsolute = if ([string]::IsNullOrWhiteSpace($SourceDirectory)) { '' } else { (Resolve-Path -LiteralPath $SourceDirectory).Path }
+  $TrustedSourceDirectoryAbsolute = (Resolve-Path -LiteralPath $TrustedSourceDirectory).Path
   $GradleDirectory = Join-Path -Path $TargetDirectoryAbsolute -ChildPath 'gradle'
   $WrapperDirectory = Join-Path -Path $GradleDirectory -ChildPath 'wrapper'
   $GradlePropertiesPath = Join-Path -Path $WrapperDirectory -ChildPath 'gradle-wrapper.properties'

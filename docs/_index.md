@@ -24,10 +24,9 @@ usage without checking `gradle/wrapper/gradle-wrapper.jar` into the source tree.
 
 ## Automatic installation scripts
 
-This repository also ships installer entrypoints that download the helper files plus the init
-script, patch existing `gradlew` / `gradlew.bat`, remove any pre-existing
-`gradle/wrapper/gradle-wrapper.jar`, and add the retained wrapper metadata patterns to
-`.gitignore`.
+This repository also ships installer entrypoints that stage helper files from a caller-supplied
+trusted local directory, patch existing `gradlew` / `gradlew.bat`, remove any pre-existing
+`gradle/wrapper/gradle-wrapper.jar`, and add the retained wrapper metadata patterns to `.gitignore`.
 
 The installer scripts for POSIX environments and Windows are idempotent, so safe to run multiple times.
 Re-running the installer scripts updates the helper files to the latest version.
@@ -42,13 +41,13 @@ local copy:
 Run from the target project root:
 
 ```sh
-bash ./tools/buildish-no-gradle-wrapper-jar/install.sh
+bash ./tools/buildish-no-gradle-wrapper-jar/install.sh --trusted-source-dir ./tools/buildish-no-gradle-wrapper-jar
 ```
 
 To target a different directory:
 
 ```sh
-bash ./tools/buildish-no-gradle-wrapper-jar/install.sh /path/to/project
+bash ./tools/buildish-no-gradle-wrapper-jar/install.sh --trusted-source-dir ./tools/buildish-no-gradle-wrapper-jar /path/to/project
 ```
 
 #### Windows / PowerShell
@@ -56,31 +55,38 @@ bash ./tools/buildish-no-gradle-wrapper-jar/install.sh /path/to/project
 Run from the target project root:
 
 ```powershell
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-gradle-wrapper-jar\install.ps1
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-gradle-wrapper-jar\install.ps1 --trusted-source-dir .\tools\buildish-no-gradle-wrapper-jar
 ```
 
 Or run it against a specific directory:
 
 ```powershell
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-gradle-wrapper-jar\install.ps1 C:\path\to\project
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-gradle-wrapper-jar\install.ps1 --trusted-source-dir .\tools\buildish-no-gradle-wrapper-jar C:\path\to\project
 ```
 
-### Convenience remote-execution flow
+### Unsafe development shortcut
 
-If you explicitly accept executing remote script content, these one-liners still work.
+If you explicitly want the old "just trust the current main branch" proof-of-concept flow, use the
+dedicated `unsafe-dev-install.*` scripts instead of `install.*`.
+
+These scripts are intentionally insecure:
+
+- they download and execute unverified development-branch content
+- they require `--yes-i-know-this-is-unsafe`
+- they are not suitable for CI, automation, or environments with secrets
 
 #### POSIX / bash
 
 Run from the target project root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.sh | sh -s -- --yes-i-know-this-is-unsafe
 ```
 
 To target a different directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/install.sh | bash -s -- /path/to/project
+curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.sh | sh -s -- --yes-i-know-this-is-unsafe /path/to/project
 ```
 
 #### Windows / PowerShell
@@ -88,28 +94,36 @@ curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish
 Run from the target project root:
 
 ```powershell
-Invoke-RestMethod https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/install.ps1 | Invoke-Expression
+& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.ps1))) --yes-i-know-this-is-unsafe
 ```
 
 Or run it against a specific directory after downloading/cloning this repository locally:
 
 ```powershell
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\buildish-no-gradle-wrapper-jar\install.ps1 C:\path\to\project
+& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.ps1))) --yes-i-know-this-is-unsafe C:\path\to\project
 ```
 
 ### Security note
 
-The `curl | bash` and `Invoke-RestMethod | Invoke-Expression` forms execute remote script content.
-Prefer pinning to a reviewed tag or commit, or download the installer first and inspect it before
-execution if your environment requires stricter supply-chain controls. The reviewed local-copy flow
-above is the preferred path until the release bootstrap is cryptographically pinned.
+`install.sh` and `install.ps1` no longer fetch helper files themselves. They require a
+`--trusted-source-dir` because they are meant to stage already-trusted local payloads, not to
+establish trust in downloaded bytes.
+
+The `unsafe-dev-install.*` one-liners above exist only as explicit development shortcuts. They are
+not suitable for CI, automation, or environments with secrets.
+
+The repository now also contains `bootstrap-install.*` release templates for the secure remote path,
+but those checked-in copies intentionally fail until a release step renders pinned release URLs and
+signing-key material into them. Until those rendered release assets are published, the reviewed
+local-copy flow above remains the preferred safe path.
 
 For the detailed, non-versioned trust model and the current security assessment, see
-[`site/pages/security.md`](../site/pages/security.md).
+[`security.md`](../security/).
 
-For trusted local development and integration testing, pass `--source-dir <path>` to point the
-installer at a checked-out `tools/buildish-no-gradle-wrapper-jar/` directory and copy helper
-files from disk instead of downloading them from GitHub.
+For trusted local development, verified bootstrap handoff, and integration testing, pass
+`--trusted-source-dir <path>` to point the installer at a checked-out
+`tools/buildish-no-gradle-wrapper-jar/` directory and copy helper files from disk instead of
+downloading anything from the network.
 
 ## Files in this blueprint
 
@@ -132,7 +146,7 @@ The helpers read `gradle/wrapper/gradle-wrapper.properties`, derive the configur
 ensure that `gradle/wrapper/gradle-wrapper.jar` is present and verified before Gradle starts, and
 inject the project-local Gradle init script when it is available.
 
-The detailed verification flow and trust boundaries live in [`site/pages/security.md`](../site/pages/security.md).
+The detailed verification flow and trust boundaries live in [`security.md`](../security/).
 This release-specific page only documents the operational behavior of the shipped helper scripts.
 
 The helpers retain the downloaded metadata beside the wrapper properties file as:
@@ -161,11 +175,11 @@ Treat that as a security failure, not as a transient warning. The helper intenti
 run Gradle with an unverified `gradle-wrapper.jar`. Remove the retained metadata files only if you
 understand why they are stale, then retry.
 
-### The installer or helper fails with a timeout
+### The helper fails with a timeout
 
-That usually means a stalled network path, proxy, or upstream endpoint. Recent PowerShell download
-paths fail explicitly instead of hanging forever. Fix the network path and retry instead of trying
-to bypass verification.
+That usually means a stalled network path, proxy, or upstream endpoint. Recent PowerShell helper
+download paths fail explicitly instead of hanging forever. Fix the network path and retry instead of
+trying to bypass verification.
 
 ### The installer says the launcher shape is unsupported
 

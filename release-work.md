@@ -14,167 +14,114 @@
   limitations under the License.
 -->
 
-# Release bootstrap signing approach
+# Release bootstrap publishing approach
+
+## Current status
+
+The repository now contains:
+
+- `bootstrap-install.sh`
+- `bootstrap-install.ps1`
+
+Those scripts are tiny release templates. They already implement the secure bootstrap verifier logic,
+but they intentionally fail closed until a release step renders the hard-coded release URL and the
+pinned signing-key material.
 
 ## Goal
 
-Move the installer bootstrap trust model away from unsigned raw file downloads and
-toward a signed release artifact that both `install.sh` and `install.ps1` can
-verify before installing helper files.
+Operationalize the secure bootstrap path so end users can execute release-rendered
+`bootstrap-install.*` scripts that verify a signed installer payload set before handing off to
+`install.* --trusted-source-dir`.
 
 ## Key assumption
 
-We already rely on `gpg` / `gpg.exe` to validate the Gradle wrapper JAR
-signature. Because of that, it is reasonable to reuse GPG for bootstrap release
-verification instead of introducing a second crypto stack.
+The project already relies on `gpg` / native `gpg.exe` for detached-signature verification in other
+paths. Reusing GPG for the release bootstrap keeps the trust model conventional and avoids adding a
+second crypto stack.
 
-## Recommended shape
+## Implemented verifier shape
 
-Do **not** embed arbitrary signed payload data at the end of the shell or
-PowerShell installer scripts.
+The current bootstrap implementation does all of the following:
 
-Instead:
+1. downloads a platform-specific installer payload set into a temporary directory,
+2. downloads a detached ASCII-armored signature plus a SHA-256 manifest for that payload set,
+3. verifies the signature in an isolated temporary GPG home against pinned trust material,
+4. verifies that the manifest contains exactly the expected files,
+5. verifies the downloaded payload checksums against that signed manifest,
+6. hands off to `install.* --trusted-source-dir <verified-dir>` only after all checks pass.
 
-1. build one bootstrap archive containing the helper files,
-2. create a detached ASCII-armored GPG signature for that archive,
-3. publish both as release assets,
-4. make the installers download and verify the archive before extraction.
+The payload sets are intentionally explicit:
 
-This is simpler to audit, easier to test, and avoids PowerShell self-parsing or
-trailing-data tricks.
+- POSIX bootstrap: `install.sh` plus the three shared helper files
+- PowerShell bootstrap: `install.ps1` plus the same three shared helper files
 
-## Proposed release artifacts
+## Release artifacts to publish
 
-For each release, publish something like:
+For each release, publish at least these assets:
 
-- `buildish-no-gradle-wrapper-jar-bootstrap-<version>.zip`
-- `buildish-no-gradle-wrapper-jar-bootstrap-<version>.zip.asc`
-- optionally `buildish-no-gradle-wrapper-jar-bootstrap-<version>.zip.sha256`
-
-The archive should contain exactly:
-
+- rendered `bootstrap-install.sh`
+- rendered `bootstrap-install.ps1`
+- `install.sh`
+- `install.ps1`
 - `buildish-no-gradle-wrapper-jar.sh`
 - `buildish-no-gradle-wrapper-jar.ps1`
 - `buildish-no-gradle-wrapper-jar.init.gradle.kts`
+- `bootstrap-install-posix.sha256`
+- `bootstrap-install-posix.sha256.asc`
+- `bootstrap-install-powershell.sha256`
+- `bootstrap-install-powershell.sha256.asc`
 
-## Trust model
+Supporting operator material should still include the ASF-hosted `KEYS` file outside the GitHub
+release asset channel.
 
-The trust root becomes:
+## Release-time rendering inputs
 
-- the checked-in installer script (`install.sh` or `install.ps1`), and
-- an embedded trusted public key plus pinned fingerprint.
+Each rendered bootstrap script needs only a tiny set of substituted values:
 
-The installer should treat the release archive as untrusted until:
+- the immutable release base URL
+- the pinned signing-key fingerprint
+- the pinned ASCII-armored public key
 
-1. it is downloaded within the configured size limit,
-2. its detached signature is downloaded within the configured size limit,
-3. the signature verifies with the pinned key in an isolated temporary GPG home.
+No runtime URL override or alternate remote source knob should be added back into the bootstrap
+scripts.
 
-Only then should the installer extract and move files into place.
+## Release signing key management
 
-## Conceptual steps to get there
+- Create an ASF-controlled signing key for bootstrap release payloads.
+- Export the public key in ASCII-armored form for embedding into the rendered bootstrap scripts.
+- Publish the public key via ASF-managed `KEYS` material for manual verification.
+- Document how key rotation updates the pinned fingerprint and embedded key material.
 
-### 1. Create and manage a signing key
+## Release automation steps
 
-- Create an ASF-controlled release signing key for this bootstrap content.
-- Export the public key in ASCII-armored form.
-- Store the private key and passphrase in GitHub secrets for the release job.
-- Document who is allowed to rotate the key and how fingerprint changes are
-  rolled out.
+1. Stage the release payload files listed above.
+2. Generate `bootstrap-install-posix.sha256` covering the POSIX payload set.
+3. Generate `bootstrap-install-powershell.sha256` covering the PowerShell payload set.
+4. Create detached ASCII-armored signatures for both manifests.
+5. Render `bootstrap-install.sh` and `bootstrap-install.ps1` with the release URL and pinned key.
+6. Publish the rendered scripts, payload files, and signed manifests as immutable release assets.
 
-### 2. Add a release packaging step
+## Validation expectations
 
-- Create a deterministic bootstrap archive during release.
-- Include only the three installer-managed helper files.
-- Keep archive layout flat and predictable.
-- Prefer a single archive over signing each helper file individually.
+Keep verification coverage for at least these cases:
 
-### 3. Sign the archive in CI
-
-- Import the private key into a temporary `GNUPGHOME` inside the release job.
-- Generate a detached ASCII-armored signature for the archive.
-- Optionally emit a SHA-256 checksum file too, mainly as an operator aid.
-- Publish the archive and signature as release assets.
-
-### 4. Decide the installer default download location
-
-- Stop defaulting bootstrap downloads to raw files under `raw.githubusercontent.com`.
-- Default to GitHub release assets instead.
-- Keep the existing source-directory override for tests and trusted local
-  development.
-- Keep the base-URL override, but clearly treat it as trusted-input-only.
-
-### 5. Embed the trusted public key in both installers
-
-- Add the ASCII-armored public key to `install.sh`.
-- Add the same ASCII-armored public key to `install.ps1`.
-- Pin the expected fingerprint in both installers.
-- Verify in an isolated temporary `GNUPGHOME`, mirroring the current wrapper JAR
-  validation pattern.
-
-### 6. Change installers to fetch archive + detached signature
-
-- Download the bootstrap archive to a temp path.
-- Download the detached signature to a temp path.
-- Apply explicit size limits to both downloads.
-- Fail hard if either limit is exceeded.
-
-### 7. Verify before extraction
-
-- Import only the embedded trusted public key into the temporary GPG home.
-- Disable network key retrieval.
-- Verify the detached signature for the downloaded archive.
-- Confirm the signing key fingerprint matches the pinned fingerprint.
-- Abort immediately if verification fails.
-
-### 8. Extract only after successful verification
-
-- Extract into a temporary directory.
-- Verify the expected file set is present and no extra unexpected files matter.
-- Optionally reject archives with path traversal, symlinks, or nested layout.
-- Move the verified helper files into place atomically.
-
-### 9. Preserve current safe-install behavior
-
-- Keep symlink / reparse-point rejection.
-- Keep temp-file downloads and temp-directory extraction.
-- Keep fail-closed behavior on partial downloads or verification errors.
-- Keep the local source copy path for tests so integration coverage remains fast.
-
-### 10. Add verification coverage
-
-Add tests for at least these cases:
-
-- valid signed archive installs successfully,
-- oversized archive download fails,
-- oversized signature download fails,
-- bad signature fails,
-- wrong signing key fails,
+- unrendered template fails closed,
+- valid signed payload set installs successfully,
+- bad detached signature fails,
+- incomplete signed manifest fails,
 - missing `gpg` / `gpg.exe` fails with a clear message,
-- malformed archive contents fail,
-- local trusted source-directory override still works.
+- local trusted-source handoff in `install.*` keeps working.
 
-## Why this is better than script trailer payloads
+## Why this shape was chosen
 
 - works the same way for POSIX and PowerShell,
-- avoids making the installer parse its own file contents,
+- avoids embedding opaque binary/archive payloads into the bootstrap script,
 - keeps signature handling conventional and auditable,
-- makes release assets explicit and reusable,
-- reduces the chance of format-specific parser surprises.
+- verifies the complete installer payload set instead of only the entrypoint,
+- keeps the trust-establishing code in `bootstrap-install.*`, not in `install.*`.
 
-## Migration idea
+## Remaining work
 
-A practical rollout can happen in stages:
-
-1. implement signed archive production in release automation,
-2. add installer support for archive verification behind the default release URL,
-3. keep local override paths for tests,
-4. once stable, remove reliance on raw unsigned bootstrap file downloads.
-
-## Open design questions
-
-- Whether to use `.zip` for both platforms or platform-specific archive formats.
-- Whether to keep publishing individual helper files in addition to the signed
-  archive for manual inspection.
-- How key rotation should be handled when the pinned installer key changes.
-- Whether releases should be channel-based (`latest`) or fully version-addressed.
+- create and manage the real ASF-controlled bootstrap signing key,
+- wire release automation to render and publish the bootstrap assets,
+- decide how key rotation and release URL versioning are documented for operators.
