@@ -960,6 +960,7 @@ exercise_helper_symlink_rejection() {
   helper_kind=$3
   target_kind=$4
   symlink_target_root="$project_dir/external-symlink-targets"
+  expected_label=''
 
   mkdir -p "$symlink_target_root"
 
@@ -967,11 +968,13 @@ exercise_helper_symlink_rejection() {
     sha256)
       target_path="$project_dir/gradle/wrapper/gradle-wrapper-$version.sha256"
       symlink_target_path="$symlink_target_root/gradle-wrapper-$version.sha256"
+      expected_label='wrapper checksum'
       log "exercising $helper_kind helper symlinked-checksum rejection in '$project_dir' for Gradle '$version'"
       ;;
     init-script)
       target_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
       symlink_target_path="$symlink_target_root/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+      expected_label='Buildish init script'
       log "exercising $helper_kind helper symlinked-init-script rejection in '$project_dir'"
       ;;
     *)
@@ -985,7 +988,9 @@ exercise_helper_symlink_rejection() {
 
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_failed "$helper_kind helper unexpectedly accepted a symlinked $target_kind path."
-  assert_last_output_contains 'must not be a symbolic link' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
+  assert_last_output_contains "$expected_label" "$helper_kind helper failure output did not identify the symlink-rejected $target_kind target."
+  assert_last_output_contains 'must not be a symbolic' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
+  assert_last_output_contains 'link:' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
 }
 
 exercise_helper_invalid_distribution_failure() {
