@@ -35,16 +35,21 @@ HELPER_MAX_JAR_BYTES=10485760
 INSTALLER_MAX_TOOL_FILE_BYTES=262144
 POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS=2
 
+# Fail fast with a consistent prefix so CI logs clearly attribute the failure to
+# this integration suite.
 fail() {
   echo "integration-test: $*" >&2
   exit 1
 }
 
+# Emit suite progress messages with the same prefix used by failures so normal
+# progress and fatal output stay easy to correlate in CI logs.
 log() {
   echo "integration-test: $*"
 }
 
 CAPTURED_OUTPUT=''
+CAPTURED_OUTPUT_NORMALIZED=''
 CAPTURED_STATUS=0
 TEST_HTTP_SERVER_PID=''
 TEST_HTTP_SERVER_PORT=''
@@ -54,44 +59,119 @@ BOOTSTRAP_TEST_GPG_HOME=''
 BOOTSTRAP_TEST_SIGNER_FINGERPRINT=''
 BOOTSTRAP_TEST_PUBLIC_KEY_PATH=''
 
+# Collapse PowerShell's presentation-only "Line |" render blocks into plain
+# text so substring assertions can match the semantic message on every platform.
+normalize_output_file_for_assertions() {
+  output_file=$1
+  python3 - <<'PY' "$output_file"
+from pathlib import Path
+import re
+import sys
+
+text = Path(sys.argv[1]).read_bytes().decode('utf-8', errors='replace')
+text = text.replace('\r\n', '\n').replace('\r', '\n')
+lines = text.split('\n')
+normalized_lines = []
+powershell_message_fragments = []
+inside_powershell_render_block = False
+
+
+def flush_powershell_message_fragments() -> None:
+    global inside_powershell_render_block
+    if powershell_message_fragments:
+        normalized_lines.append(' '.join(powershell_message_fragments))
+        powershell_message_fragments.clear()
+    inside_powershell_render_block = False
+
+
+for line in lines:
+    if line.strip() == 'Line |':
+        flush_powershell_message_fragments()
+        inside_powershell_render_block = True
+        continue
+
+    if inside_powershell_render_block:
+        if re.match(r'^\s*[0-9]+\s+\|\s', line):
+            continue
+
+        match = re.match(r'^\s*\|\s?(.*)$', line)
+        if match is not None:
+            fragment = match.group(1).strip()
+            if fragment and re.fullmatch(r'~+', fragment) is None:
+                powershell_message_fragments.append(fragment)
+            continue
+
+        flush_powershell_message_fragments()
+
+    normalized_lines.append(line)
+
+flush_powershell_message_fragments()
+print('\n'.join(normalized_lines), end='')
+PY
+}
+
+# Store both the raw process output and the normalized assertion view so tests
+# can keep exact-output checks without reintroducing PowerShell-specific hacks.
+store_captured_output_from_file() {
+  output_file=$1
+  CAPTURED_OUTPUT=$(cat "$output_file")
+  # Keep a second, assertion-focused view that removes PowerShell's presentation
+  # wrapper while leaving Linux/plain output untouched.
+  CAPTURED_OUTPUT_NORMALIZED=$(normalize_output_file_for_assertions "$output_file")
+}
+
+# Run a command, capture its combined output, and preserve the exit status so
+# later assertions can reason about both success/failure and emitted text.
 run_and_capture() {
   output_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-test.XXXXXX")
   set +e
   "$@" >"$output_file" 2>&1
   CAPTURED_STATUS=$?
   set -e
-  CAPTURED_OUTPUT=$(cat "$output_file")
+  store_captured_output_from_file "$output_file"
   rm -f "$output_file"
 }
 
+# Assert that the previously captured command succeeded while printing the raw
+# output for debugging when the expectation is violated.
 assert_last_command_succeeded() {
   [ "$CAPTURED_STATUS" -eq 0 ] || fail "$1 (exit status=$CAPTURED_STATUS, output=$CAPTURED_OUTPUT)"
 }
 
+# Assert that the previously captured command failed so negative-path tests can
+# express the expected control flow explicitly.
 assert_last_command_failed() {
   [ "$CAPTURED_STATUS" -ne 0 ] || fail "$1"
 }
 
+# Assert against the normalized output view so PowerShell's formatting layer
+# does not force every caller to special-case wrapped stderr.
 assert_last_output_contains() {
   expected_text=$1
   failure_message=$2
-  printf '%s' "$CAPTURED_OUTPUT" | grep -Fq "$expected_text" || fail "$failure_message (output=$CAPTURED_OUTPUT)"
+  printf '%s' "$CAPTURED_OUTPUT_NORMALIZED" | grep -Fq "$expected_text" || fail "$failure_message (normalized-output=$CAPTURED_OUTPUT_NORMALIZED, raw-output=$CAPTURED_OUTPUT)"
 }
 
+# Assert that normalized output omits a fragment while still reporting both the
+# normalized and raw views when a failure needs investigation.
 assert_last_output_not_contains() {
   unexpected_text=$1
   failure_message=$2
-  if printf '%s' "$CAPTURED_OUTPUT" | grep -Fq "$unexpected_text"; then
-    fail "$failure_message (output=$CAPTURED_OUTPUT)"
+  if printf '%s' "$CAPTURED_OUTPUT_NORMALIZED" | grep -Fq "$unexpected_text"; then
+    fail "$failure_message (normalized-output=$CAPTURED_OUTPUT_NORMALIZED, raw-output=$CAPTURED_OUTPUT)"
   fi
 }
 
+# Assert on the raw output when a test cares about exact quoting or line shape
+# rather than semantic substrings.
 assert_last_output_equals() {
   expected_text=$1
   failure_message=$2
   [ "$CAPTURED_OUTPUT" = "$expected_text" ] || fail "$failure_message (output=$CAPTURED_OUTPUT)"
 }
 
+# Check the stable timeout fragments that should survive platform-specific
+# formatting differences in the surrounding error text.
 assert_last_output_mentions_timeout() {
   timeout_seconds=$1
   failure_message=$2
@@ -99,6 +179,8 @@ assert_last_output_mentions_timeout() {
   assert_last_output_contains "after $timeout_seconds seconds" "$failure_message"
 }
 
+# Count raw output lines exactly for launcher-argument tests where normalization
+# would hide the shape the test is intentionally inspecting.
 assert_last_output_exact_line_count() {
   expected_line=$1
   expected_count=$2
@@ -115,6 +197,8 @@ raise SystemExit(0 if actual_count == expected_count else 1)
 PY
 }
 
+# Source SDKMAN lazily so the suite can find Gradle in clean CI environments as
+# well as in developer shells that already initialized SDKMAN.
 source_sdkman_gradle() {
   if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ] && ! command -v sdk >/dev/null 2>&1; then
     set +u
@@ -128,6 +212,8 @@ source_sdkman_gradle() {
   command -v gradle >/dev/null 2>&1 || fail 'gradle is still not available on PATH after sourcing SDKMAN.'
 }
 
+# Pin the Gradle version used for fixture bootstrap when a scenario needs an
+# older launcher shape than the default environment provides.
 use_sdkman_gradle_version() {
   version=$1
   source_sdkman_gradle
@@ -138,6 +224,8 @@ use_sdkman_gradle_version() {
   command -v gradle >/dev/null 2>&1 || fail "gradle is not available on PATH after selecting SDKMAN Gradle version '$version'."
 }
 
+# Choose a Java 17 runtime for the version exercise because older Gradle 8.1.x
+# fixtures need that floor to bootstrap reliably in CI.
 select_sdkman_java_version_for_version_exercise() {
   [ -d "$HOME/.sdkman/candidates/java" ] || fail 'SDKMAN Java candidates directory was not found for the version exercise.'
   java_version=$(find "$HOME/.sdkman/candidates/java" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep '^17\.' | sort -V | tail -n 1)
@@ -145,6 +233,8 @@ select_sdkman_java_version_for_version_exercise() {
   printf '%s' "$java_version"
 }
 
+# Switch the active Java runtime through SDKMAN so version-list exercises use a
+# known-compatible JDK instead of whatever the outer shell selected.
 use_sdkman_java_version() {
   version=$1
   source_sdkman_gradle
@@ -155,10 +245,14 @@ use_sdkman_java_version() {
   command -v java >/dev/null 2>&1 || fail "java is not available on PATH after selecting SDKMAN Java version '$version'."
 }
 
+# Fail early when an external tool is missing so later test failures do not hide
+# a simple environment problem.
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command '$1' is not available on PATH."
 }
 
+# Verify the common toolchain once before starting the expensive integration
+# flow and ensure the shared build directory exists.
 require_base_commands() {
   source_sdkman_gradle
   require_command gradle
@@ -168,10 +262,14 @@ require_base_commands() {
   mkdir -p "$BUILD_DIR"
 }
 
+# Turn arbitrary labels into filesystem-safe path fragments so per-version logs
+# and temp directories stay portable.
 sanitize_for_path() {
   printf '%s' "$1" | tr '/:' '__' | tr -c 'A-Za-z0-9._-' '_'
 }
 
+# Compute SHA-256 with whichever checksum tool is available so the suite works
+# on both GNU/Linux and macOS-style developer environments.
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | cut -d' ' -f1
@@ -180,18 +278,26 @@ hash_file() {
   fi
 }
 
+# Read the wrapper version from gradle-wrapper.properties so follow-up checks can
+# assert against the exact metadata files a scenario should create.
 extract_gradle_version() {
   sed -n 's/^distributionUrl=.*gradle-\([0-9.][0-9.]*\)-[a-z]*\.zip$/\1/p' "$1/gradle/wrapper/gradle-wrapper.properties"
 }
 
+# Keep each fixture on its own Gradle user home so caches and daemons cannot
+# leak state between scenarios.
 gradle_user_home() {
   printf '%s-gradle-user-home' "$1"
 }
 
+# Centralize the injected init-script path so launcher and init-script tests do
+# not duplicate the repository-specific location.
 gradle_init_script_path() {
   printf '%s/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts' "$1"
 }
 
+# Create oversized metadata or JAR fixtures deterministically so download-limit
+# tests can target exact byte thresholds.
 write_file_with_size() {
   file_path=$1
   size_bytes=$2
@@ -209,6 +315,8 @@ path.write_bytes(prefix + (b'a' * (size_bytes - len(prefix))))
 PY
 }
 
+# Generate an isolated throwaway GPG identity so bootstrap tests can exercise
+# signature verification without depending on any developer machine keyring.
 create_bootstrap_signing_fixture() {
   signing_root=$1
   BOOTSTRAP_TEST_GPG_HOME="$signing_root/gpg-home"
@@ -225,6 +333,8 @@ create_bootstrap_signing_fixture() {
     fail 'unable to export the bootstrap integration public key.'
 }
 
+# Render a release-like bootstrap script from the checked-in template so the
+# bootstrap tests can validate signed payload flows with local fixtures.
 render_bootstrap_release_script() {
   template_path=$1
   output_path=$2
@@ -280,6 +390,8 @@ PY
   esac
 }
 
+# Build the signed payload manifest from the exact fixture files so bootstrap
+# scenarios can control which entries are present.
 write_bootstrap_manifest() {
   server_root=$1
   manifest_path=$2
@@ -291,6 +403,8 @@ write_bootstrap_manifest() {
   done
 }
 
+# Sign the bootstrap manifest with the ephemeral test key so signature checks
+# exercise the same trust path as a real release artifact.
 sign_bootstrap_manifest() {
   manifest_path=$1
   signature_path=$2
@@ -299,6 +413,8 @@ sign_bootstrap_manifest() {
     fail "unable to sign bootstrap payload manifest '$manifest_path'."
 }
 
+# Tear down whichever local HTTP server is active so each scenario starts from a
+# clean network fixture and long-lived background processes do not leak.
 stop_test_http_server() {
   if [ -n "$TEST_HTTP_SERVER_PID" ]; then
     kill "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1 || true
@@ -311,6 +427,8 @@ stop_test_http_server() {
   TEST_HTTP_SERVER_PORT_FILE=''
 }
 
+# Serve a directory over localhost so download scenarios can fetch deterministic
+# local fixtures without reaching external infrastructure.
 start_static_http_server() {
   served_dir=$1
   stop_test_http_server
@@ -353,6 +471,8 @@ PY
   fail "unable to start the local HTTP test server. log=$log_contents"
 }
 
+# Accept TCP connections and then hang so the PowerShell timeout path can be
+# exercised without relying on flaky network conditions.
 start_stalling_http_server() {
   stop_test_http_server
   TEST_HTTP_SERVER_PORT_FILE=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-port.XXXXXX")
@@ -394,6 +514,8 @@ PY
   fail "unable to start the stalling HTTP test server. log=$log_contents"
 }
 
+# Assemble a release-like bootstrap payload tree, optionally damage the manifest
+# or signature, and expose it over localhost for end-to-end bootstrap tests.
 prepare_bootstrap_release_fixture() {
   server_root=$1
   bootstrap_kind=$2
@@ -459,6 +581,8 @@ prepare_bootstrap_release_fixture() {
   render_bootstrap_release_script "$bootstrap_template_path" "$bootstrap_output_path" "$bootstrap_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT" "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" "$BOOTSTRAP_TEST_PUBLIC_KEY_PATH"
 }
 
+# Copy a project fixture into an isolated scenario directory so each exercise is
+# free to mutate files without contaminating later tests.
 copy_project_fixture() {
   source_dir=$1
   target_dir=$2
@@ -467,12 +591,16 @@ copy_project_fixture() {
   cp -R "$source_dir" "$target_dir"
 }
 
+# Add the checked-in init script to a project fixture so init-script-focused
+# tests can run without first invoking the full installer flow.
 copy_init_script_into_project() {
   project_dir=$1
   mkdir -p "$project_dir/gradle"
   cp "$TOOL_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" "$(gradle_init_script_path "$project_dir")"
 }
 
+# Clone a base project and inject the init script in one step because the
+# focused init-script suite repeats that setup many times.
 copy_init_script_fixture() {
   source_dir=$1
   target_dir=$2
@@ -480,6 +608,8 @@ copy_init_script_fixture() {
   copy_init_script_into_project "$target_dir"
 }
 
+# Create a fresh Gradle sample project that mirrors a real consumer checkout so
+# installer and helper tests can mutate launcher files in realistic fixtures.
 gradle_init_fixture() {
   project_dir=$1
   bootstrap_gradle_version=${2:-}
@@ -498,6 +628,8 @@ gradle_init_fixture() {
   [ -f "$project_dir/gradle/wrapper/gradle-wrapper.jar" ] || fail "gradle init did not create gradle-wrapper.jar in '$project_dir'."
 }
 
+# Assert that all installed helper artifacts are present before a scenario moves
+# on to launcher or wrapper-behavior checks.
 assert_helper_files() {
   project_dir=$1
   test -f "$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh" || fail 'missing POSIX helper file.'
@@ -505,6 +637,8 @@ assert_helper_files() {
   test -f "$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts" || fail 'missing Gradle init script.'
 }
 
+# Assert that a failing installer left no helper artifacts behind so negative
+# paths prove they fail closed.
 assert_helper_files_absent() {
   project_dir=$1
   [ ! -e "$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh" ] || fail 'unexpected POSIX helper file was installed.'
@@ -512,6 +646,8 @@ assert_helper_files_absent() {
   [ ! -e "$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts" ] || fail 'unexpected Gradle init script was installed.'
 }
 
+# Check for an exact line match so launcher patch tests stay insensitive to the
+# surrounding file content.
 file_has_exact_line() {
   file_path=$1
   expected_line=$2
@@ -523,6 +659,8 @@ raise SystemExit(0 if sys.argv[2] in lines else 1)
 PY
 }
 
+# Count exact line occurrences to catch duplicate launcher patches rather than
+# just their presence.
 file_has_exact_line_count() {
   file_path=$1
   expected_line=$2
@@ -539,6 +677,8 @@ raise SystemExit(0 if actual_count == expected_count else 1)
 PY
 }
 
+# Wrap the exact-line-count helper with a failure message tailored to the caller
+# so duplicate-patch diagnostics stay readable.
 assert_file_exact_line_count() {
   file_path=$1
   expected_line=$2
@@ -547,6 +687,8 @@ assert_file_exact_line_count() {
   file_has_exact_line_count "$file_path" "$expected_line" "$expected_count" || fail "$failure_message"
 }
 
+# Check whether a file contains a text fragment while normalizing CRLF so batch
+# launcher assertions work the same on every host OS.
 file_contains_text() {
   file_path=$1
   expected_text=$2
@@ -558,6 +700,8 @@ raise SystemExit(0 if sys.argv[2] in text else 1)
 PY
 }
 
+# Assert newline style and trailing-newline behavior so launcher patching does
+# not silently rewrite file shape in edge-case fixtures.
 assert_file_newline_shape() {
   file_path=$1
   expected_style=$2
@@ -584,6 +728,8 @@ raise SystemExit(0 if style_ok and trailing_ok else 1)
 PY
 }
 
+# Replace or append a wrapper property so edge-case scenarios can steer helper
+# behavior without depending on brittle shell text mangling.
 set_wrapper_property() {
   file_path=$1
   property_name=$2
@@ -610,6 +756,8 @@ path.write_text("\n".join(updated) + "\n")
 PY
 }
 
+# Delete a wrapper property to drive negative-path tests that depend on a value
+# being truly absent rather than set to an empty string.
 remove_wrapper_property() {
   file_path=$1
   property_name=$2
@@ -624,6 +772,8 @@ path.write_text("\n".join(lines) + "\n")
 PY
 }
 
+# Repoint helper download URLs at the local test server so recovery, timeout,
+# and oversized-download scenarios never hit the public network.
 configure_helper_download_urls() {
   project_dir=$1
   helper_kind=$2
@@ -678,6 +828,8 @@ PY
   esac
 }
 
+# Assert the key launcher patch anchors so installer and init-script tests can
+# verify behavior without diffing whole launcher files.
 assert_launcher_patches() {
   project_dir=$1
   file_has_exact_line "$project_dir/gradlew" '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' || fail 'gradlew was not patched with the helper include.'
@@ -685,6 +837,8 @@ assert_launcher_patches() {
   file_contains_text "$project_dir/gradlew.bat" '%BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*' || fail 'gradlew.bat final Java invocation was not patched.'
 }
 
+# Verify that installer flows also update .gitignore, because cached metadata is
+# part of the supported workflow and should not become accidental commits.
 assert_gitignore_updates() {
   project_dir=$1
   grep -Fqx '# Added by buildish-no-gradle-wrapper-jar' "$project_dir/.gitignore" || fail '.gitignore helper comment was not added.'
@@ -692,6 +846,8 @@ assert_gitignore_updates() {
   grep -Fqx 'gradle/wrapper/gradle-wrapper-*.asc' "$project_dir/.gitignore" || fail '.gitignore asc ignore was not added.'
 }
 
+# Verify that the wrapper JAR and its cached integrity metadata all line up for
+# a specific Gradle version after helper recovery or installer runs.
 assert_metadata_for_version() {
   project_dir=$1
   version=$2
@@ -708,6 +864,8 @@ assert_metadata_for_version() {
   [ "$first_signature_line" = '-----BEGIN PGP SIGNATURE-----' ] || fail "wrapper detached signature file for version '$version' is malformed."
 }
 
+# Run the generated wrapper for smoke checks where only success matters and the
+# command output itself is not part of the assertion surface.
 run_wrapper() {
   project_dir=$1
   shift
@@ -715,6 +873,8 @@ run_wrapper() {
   (cd "$project_dir" && GRADLE_USER_HOME=$(gradle_user_home "$project_dir") ./gradlew --no-daemon "$@" >/dev/null)
 }
 
+# Run the wrapper while capturing output so wrapper-update and failure-path tests
+# can assert on emitted warnings and diagnostics.
 run_wrapper_capture() {
   project_dir=$1
   shift
@@ -724,10 +884,12 @@ run_wrapper_capture() {
   (cd "$project_dir" && GRADLE_USER_HOME=$(gradle_user_home "$project_dir") ./gradlew --no-daemon "$@") >"$output_file" 2>&1
   CAPTURED_STATUS=$?
   set -e
-  CAPTURED_OUTPUT=$(cat "$output_file")
+  store_captured_output_from_file "$output_file"
   rm -f "$output_file"
 }
 
+# Run plain Gradle with the checked-in init script attached so init-script-only
+# tests can inspect its patching and warning behavior directly.
 run_gradle_with_init_script_capture() {
   project_dir=$1
   shift
@@ -737,22 +899,56 @@ run_gradle_with_init_script_capture() {
   (cd "$project_dir" && GRADLE_USER_HOME=$(gradle_user_home "$project_dir") gradle -p "$project_dir" --no-daemon --console=plain --init-script "$(gradle_init_script_path "$project_dir")" "$@") >"$output_file" 2>&1
   CAPTURED_STATUS=$?
   set -e
-  CAPTURED_OUTPUT=$(cat "$output_file")
+  store_captured_output_from_file "$output_file"
   rm -f "$output_file"
 }
 
+# Exercise the shared output normalizer itself so future assertion cleanups do
+# not regress either the PowerShell or plain-Linux output contracts.
+exercise_output_normalization_contract() {
+  output_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-test.XXXXXX")
+
+  log 'checking captured-output normalization contract'
+  cat >"$output_file" <<'EOF'
+Exception: /tmp/bootstrap-install.ps1:47
+Line |
+  47 |  throw 'This checked-in bootstrap-install.ps1 still contains unreplace …
+     |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | This checked-in bootstrap-install.ps1 still contains unreplaced release
+     | placeholders. Use a release-generated bootstrap-install.ps1 or the
+     | reviewed local-copy/manual-verification flow.
+EOF
+  store_captured_output_from_file "$output_file"
+  assert_last_output_contains 'release placeholders' 'normalized PowerShell stderr did not collapse wrapped message fragments into one searchable sentence.'
+  [ "$CAPTURED_OUTPUT" != "$CAPTURED_OUTPUT_NORMALIZED" ] || fail 'PowerShell stderr normalization did not remove the presentation-only render block.'
+
+  cat >"$output_file" <<'EOF'
+plain linux stderr line
+EOF
+  store_captured_output_from_file "$output_file"
+  [ "$CAPTURED_OUTPUT" = "$CAPTURED_OUTPUT_NORMALIZED" ] || fail 'Linux/plain stderr should be left unchanged by captured-output normalization.'
+
+  rm -f "$output_file"
+}
+
+# Run the POSIX installer in capture mode so installer tests can reuse the same
+# assertion helpers as the PowerShell path.
 run_posix_installer_capture() {
   project_dir=$1
   log "installing POSIX helper into '$project_dir'"
   run_and_capture sh "$TOOL_DIR/install.sh" --trusted-source-dir "$TOOL_DIR" "$project_dir"
 }
 
+# Run the PowerShell installer in capture mode so cross-platform installer tests
+# share one assertion style after output normalization.
 run_powershell_installer_capture() {
   project_dir=$1
   log "installing PowerShell helper into '$project_dir'"
   run_and_capture pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" --trusted-source-dir "$TOOL_DIR" "$project_dir"
 }
 
+# Run the POSIX unsafe-dev installer with captured output because these tests
+# care about the warning banner and CI guardrails as much as the exit code.
 run_posix_unsafe_dev_installer_capture() {
   project_dir=$1
   shift
@@ -760,6 +956,8 @@ run_posix_unsafe_dev_installer_capture() {
   run_and_capture env "$@" sh "$TOOL_DIR/unsafe-dev-install.sh" --yes-i-know-this-is-unsafe "$project_dir"
 }
 
+# Run the PowerShell unsafe-dev installer with captured output so the same
+# acknowledgement and CI-barrier checks apply on both platforms.
 run_powershell_unsafe_dev_installer_capture() {
   project_dir=$1
   shift
@@ -767,6 +965,8 @@ run_powershell_unsafe_dev_installer_capture() {
   run_and_capture env "$@" pwsh -NoLogo -NoProfile -File "$TOOL_DIR/unsafe-dev-install.ps1" --yes-i-know-this-is-unsafe "$project_dir"
 }
 
+# Run a POSIX bootstrap script against a fixture while capturing its signed
+# bootstrap diagnostics for follow-up assertions.
 run_posix_bootstrap_installer_capture() {
   bootstrap_script_path=$1
   project_dir=$2
@@ -774,6 +974,8 @@ run_posix_bootstrap_installer_capture() {
   run_and_capture sh "$bootstrap_script_path" "$project_dir"
 }
 
+# Run a PowerShell bootstrap script against a fixture while capturing output in
+# the normalized form needed for portable stderr assertions.
 run_powershell_bootstrap_installer_capture() {
   bootstrap_script_path=$1
   project_dir=$2
@@ -781,6 +983,8 @@ run_powershell_bootstrap_installer_capture() {
   run_and_capture pwsh -NoLogo -NoProfile -File "$bootstrap_script_path" "$project_dir"
 }
 
+# Source the POSIX helper directly to exercise its recovery logic without going
+# through the full launcher or Gradle process tree.
 run_posix_helper_direct() {
   project_dir=$1
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
@@ -788,6 +992,8 @@ run_posix_helper_direct() {
   run_and_capture env APP_HOME="$project_dir" sh -c 'helper_path=$1; set --; . "$helper_path"' sh "$helper_path"
 }
 
+# Source the POSIX helper and echo the resulting argv so init-script injection
+# tests can reason about exact argument deduplication behavior.
 run_posix_helper_direct_capture_args() {
   project_dir=$1
   shift
@@ -796,6 +1002,8 @@ run_posix_helper_direct_capture_args() {
   run_and_capture env APP_HOME="$project_dir" sh -c 'helper_path=$1; shift; set -- "$@"; . "$helper_path"; for arg do printf "%s\n" "$arg"; done' sh "$helper_path" "$@"
 }
 
+# Run the PowerShell helper directly and feed it synthetic original args so its
+# launcher-argument injection logic can be tested in isolation.
 run_powershell_helper_direct() {
   project_dir=$1
   original_args=${2:-}
@@ -804,6 +1012,8 @@ run_powershell_helper_direct() {
   run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" pwsh -NoLogo -NoProfile -File "$helper_path"
 }
 
+# Run the PowerShell helper with a shortened HTTP timeout so the timeout path is
+# testable without waiting on production-sized retry windows.
 run_powershell_helper_direct_with_timeout() {
   project_dir=$1
   timeout_seconds=$2
@@ -813,17 +1023,23 @@ run_powershell_helper_direct_with_timeout() {
   run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS="$timeout_seconds" pwsh -NoLogo -NoProfile -File "$helper_path"
 }
 
+# Check the installer warning emitted when the project does not define
+# distributionSha256Sum, which remains an intentional but visible gap.
 assert_installer_distribution_sha_warning_output() {
   context_label=$1
   assert_last_output_contains 'does not define distributionSha256Sum' "$context_label did not emit the missing distributionSha256Sum installer warning."
 }
 
+# Check the init-script warning surface for missing distributionSha256Sum so the
+# wrapper-update flow stays explicit about the integrity limitation.
 assert_init_distribution_sha_warning_output() {
   context_label=$1
   assert_last_output_contains 'Buildish helper warning:' "$context_label did not emit the Buildish warning banner for missing distributionSha256Sum."
   assert_last_output_contains 'distributionSha256Sum' "$context_label did not mention distributionSha256Sum in its warning output."
 }
 
+# Exercise helper recovery when the cached wrapper JAR is corrupted and both
+# metadata sidecars must be re-fetched from the configured source.
 exercise_helper_recovery_scenario() {
   project_dir=$1
   version=$2
@@ -841,6 +1057,8 @@ exercise_helper_recovery_scenario() {
   assert_metadata_for_version "$project_dir" "$version"
 }
 
+# Exercise helper recovery when only the wrapper JAR is corrupted and cached
+# checksum/signature metadata should be reused instead of re-downloaded.
 exercise_helper_recovery_with_cached_metadata() {
   project_dir=$1
   version=$2
@@ -855,6 +1073,8 @@ exercise_helper_recovery_with_cached_metadata() {
   assert_metadata_for_version "$project_dir" "$version"
 }
 
+# Exercise helper recovery from malformed cached checksum or signature metadata
+# so stale sidecars cannot pin the project in a broken state.
 exercise_helper_malformed_metadata_recovery() {
   project_dir=$1
   version=$2
@@ -882,6 +1102,8 @@ exercise_helper_malformed_metadata_recovery() {
   assert_metadata_for_version "$project_dir" "$version"
 }
 
+# Exercise helper rejection of oversized metadata and wrapper downloads so the
+# documented size ceilings are enforced before files are published locally.
 exercise_helper_oversized_download_failure() {
   project_dir=$1
   version=$2
@@ -935,6 +1157,8 @@ exercise_helper_oversized_download_failure() {
   [ ! -e "$target_path" ] || fail "$helper_kind helper should not publish an oversized $download_kind file into '$target_path'."
 }
 
+# Exercise the PowerShell helper timeout path against a stalling localhost
+# server so its timeout diagnostics and cleanup behavior are regression-covered.
 exercise_powershell_helper_download_timeout_failure() {
   project_dir=$1
   version=$2
@@ -954,6 +1178,8 @@ exercise_powershell_helper_download_timeout_failure() {
   [ ! -e "$sha_path" ] || fail "PowerShell helper should not publish a timed-out checksum download into '$sha_path'."
 }
 
+# Exercise helper rejection of symlinked integrity artifacts so the runtime path
+# cannot be redirected outside the project tree through filesystem indirection.
 exercise_helper_symlink_rejection() {
   project_dir=$1
   version=$2
@@ -988,13 +1214,11 @@ exercise_helper_symlink_rejection() {
 
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_failed "$helper_kind helper unexpectedly accepted a symlinked $target_kind path."
-  # The fragmented checks are there because Windows PowerShell wraps the message across several lines with extra noise.
-  assert_last_output_contains "$expected_label" "$helper_kind helper failure output did not identify the symlink-rejected $target_kind target."
-  assert_last_output_contains 'must not be a' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
-  assert_last_output_contains 'symbolic' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
-  assert_last_output_contains 'link:' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
+  assert_last_output_contains "$expected_label must not be a symbolic link:" "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
 }
 
+# Exercise helper rejection of non-canonical distribution URLs so the wrapper
+# source stays pinned to the supported services.gradle.org location.
 exercise_helper_invalid_distribution_failure() {
   project_dir=$1
   helper_kind=$2
@@ -1010,6 +1234,8 @@ exercise_helper_invalid_distribution_failure() {
   assert_last_output_contains 'services.gradle.org URL' "$helper_kind helper failure output did not mention the required services.gradle.org host."
 }
 
+# Exercise installer failure when gradle-wrapper.properties is missing, because
+# patching without wrapper metadata would leave the project in an unknown state.
 exercise_installer_missing_properties_failure() {
   project_dir=$1
   installer_kind=$2
@@ -1020,11 +1246,11 @@ exercise_installer_missing_properties_failure() {
 
   "run_${installer_kind}_installer_capture" "$project_dir"
   assert_last_command_failed "$installer_kind installer unexpectedly succeeded without gradle-wrapper.properties."
-  # The fragmented checks are there because Windows PowerShell wraps the message across several lines with extra noise.
-  assert_last_output_contains 'Gradle wrapper properties file' "$installer_kind installer failure output did not mention the missing gradle-wrapper.properties file."
-  assert_last_output_contains 'was not found' "$installer_kind installer failure output did not mention that gradle-wrapper.properties was missing."
+  assert_last_output_contains 'Gradle wrapper properties file was not found' "$installer_kind installer failure output did not mention the missing gradle-wrapper.properties file."
 }
 
+# Exercise the installer CLI guard that requires an explicit trusted source dir
+# before helper files are copied into a project.
 exercise_installer_requires_trusted_source_dir_failure() {
   project_dir=$1
   installer_kind=$2
@@ -1048,6 +1274,8 @@ exercise_installer_requires_trusted_source_dir_failure() {
   assert_last_output_contains 'trusted-source-dir is required' "$installer_kind installer failure output did not explain that --trusted-source-dir is mandatory."
 }
 
+# Exercise the unsafe-dev installer acknowledgement guard so the dangerous flow
+# cannot run without an explicit opt-in flag.
 exercise_unsafe_dev_installer_requires_acknowledgement_failure() {
   project_dir=$1
   installer_kind=$2
@@ -1071,6 +1299,8 @@ exercise_unsafe_dev_installer_requires_acknowledgement_failure() {
   assert_last_output_contains 'yes-i-know-this-is-unsafe' "$installer_kind unsafe dev installer failure output did not mention the mandatory unsafe acknowledgement flag."
 }
 
+# Exercise the unsafe-dev installer CI barrier so the intentionally unsafe flow
+# refuses to run in automated environments.
 exercise_unsafe_dev_installer_ci_barrier_failure() {
   project_dir=$1
   installer_kind=$2
@@ -1094,6 +1324,8 @@ exercise_unsafe_dev_installer_ci_barrier_failure() {
   assert_last_output_contains 'not suitable for CI environments' "$installer_kind unsafe dev installer failure output did not mention that the script is not suitable for CI environments."
 }
 
+# Detect whether the current shell already looks like CI so locally safe smoke
+# tests do not accidentally run the unsafe-dev happy path inside automation.
 current_environment_looks_like_ci() {
   for marker in CI GITHUB_ACTIONS GITLAB_CI JENKINS_URL JENKINS_HOME BUILDKITE TEAMCITY_VERSION CIRCLECI TRAVIS TF_BUILD BITBUCKET_BUILD_NUMBER APPVEYOR DRONE SYSTEM_COLLECTIONURI; do
     eval "value=\${$marker-}"
@@ -1108,6 +1340,8 @@ current_environment_looks_like_ci() {
   return 1
 }
 
+# Exercise the unsafe-dev installer happy path on a localhost mirror so the
+# warning banner and helper installation still get a smoke test outside CI.
 exercise_unsafe_dev_installer_success() {
   project_dir=$1
   installer_kind=$2
@@ -1140,6 +1374,8 @@ exercise_unsafe_dev_installer_success() {
   assert_helper_files "$project_dir"
 }
 
+# Exercise the checked-in bootstrap template guard so unreplaced release
+# placeholders fail closed instead of attempting a partial install.
 exercise_bootstrap_template_guard_failure() {
   project_dir=$1
   bootstrap_kind=$2
@@ -1164,6 +1400,8 @@ exercise_bootstrap_template_guard_failure() {
   assert_helper_files_absent "$project_dir"
 }
 
+# Exercise bootstrap detached-signature verification by tampering with the
+# signed manifest after signing and expecting the install to fail closed.
 exercise_bootstrap_signature_failure() {
   project_dir=$1
   bootstrap_kind=$2
@@ -1192,6 +1430,8 @@ exercise_bootstrap_signature_failure() {
   assert_helper_files_absent "$project_dir"
 }
 
+# Exercise bootstrap enforcement that every signed payload file must appear in
+# the manifest exactly once before anything is installed.
 exercise_bootstrap_missing_manifest_entry_failure() {
   project_dir=$1
   bootstrap_kind=$2
@@ -1221,6 +1461,8 @@ exercise_bootstrap_missing_manifest_entry_failure() {
   assert_helper_files_absent "$project_dir"
 }
 
+# Exercise the release-style bootstrap happy path from signed localhost payloads
+# through helper installation and launcher patch verification.
 exercise_bootstrap_success() {
   project_dir=$1
   bootstrap_kind=$2
@@ -1251,14 +1493,20 @@ exercise_bootstrap_success() {
   assert_launcher_patches "$project_dir"
 }
 
+# Reserved placeholder for installer-side download size checks so future work
+# can slot into the suite without reshaping the surrounding runners.
 exercise_installer_oversized_tool_download_failure() {
   :
 }
 
+# Reserved placeholder for installer-side timeout coverage once the installer is
+# taught to fetch tool files through a timeout-controlled path.
 exercise_powershell_installer_download_timeout_failure() {
   :
 }
 
+# Exercise helper failure when gradle-wrapper.properties is missing so the
+# helper refuses to guess the target distribution metadata.
 exercise_helper_missing_properties_failure() {
   project_dir=$1
   helper_kind=$2
@@ -1268,12 +1516,12 @@ exercise_helper_missing_properties_failure() {
 
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_failed "$helper_kind helper unexpectedly succeeded without gradle-wrapper.properties."
-  # The fragmented checks are there because Windows PowerShell wraps the message across several lines with extra noise..
-  assert_last_output_contains 'Gradle wrapper properties file' "$helper_kind helper failure output did not mention the missing gradle-wrapper.properties file."
-  assert_last_output_contains 'was not' "$helper_kind helper failure output did not mention that gradle-wrapper.properties was missing."
+  assert_last_output_contains 'Gradle wrapper properties file was not found' "$helper_kind helper failure output did not mention that gradle-wrapper.properties was missing."
   assert_last_output_contains 'gradle-wrapper.properties' "$helper_kind helper failure output did not mention the missing gradle-wrapper.properties path."
 }
 
+# Exercise helper failure when distributionUrl is absent so recovery cannot fall
+# back to an implicit or attacker-controlled distribution source.
 exercise_helper_missing_distribution_url_failure() {
   project_dir=$1
   helper_kind=$2
@@ -1287,6 +1535,8 @@ exercise_helper_missing_distribution_url_failure() {
   assert_last_output_contains 'distributionUrl entry' "$helper_kind helper failure output did not mention the missing distributionUrl entry."
 }
 
+# Exercise helper support for two-segment Gradle versions so metadata caching is
+# not coupled to three-segment release numbers.
 exercise_helper_two_segment_version_support() {
   project_dir=$1
   helper_kind=$2
@@ -1303,6 +1553,8 @@ exercise_helper_two_segment_version_support() {
   assert_metadata_for_version "$project_dir" "$target_version"
 }
 
+# Exercise POSIX helper argument deduplication across the split and compact
+# --init-script / -I spellings used by real Gradle invocations.
 exercise_posix_helper_init_script_deduplication() {
   project_dir=$1
   init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
@@ -1328,6 +1580,8 @@ exercise_posix_helper_init_script_deduplication() {
   assert_last_output_exact_line_count "-I$init_script_path" 1 'POSIX helper duplicated the compact -I<path> argument.'
 }
 
+# Exercise PowerShell helper init-script injection and deduplication so the
+# batch launcher contract keeps quoting paths with spaces correctly.
 exercise_powershell_helper_init_script_output() {
   project_dir=$1
   init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
@@ -1344,6 +1598,8 @@ exercise_powershell_helper_init_script_output() {
   assert_last_output_equals '' 'PowerShell helper should not emit a duplicate init-script argument when the caller already supplied it.'
 }
 
+# Exercise that the init script suppresses the warning banner once the project
+# defines distributionSha256Sum explicitly.
 exercise_init_script_warning_suppression() {
   project_dir=$1
 
@@ -1361,6 +1617,8 @@ EOF
   assert_launcher_patches "$project_dir"
 }
 
+# Exercise init-script idempotence against already patched launchers so wrapper
+# reruns do not duplicate helper includes or batch launcher blocks.
 exercise_init_script_idempotence() {
   project_dir=$1
   gradlew_path="$project_dir/gradlew"
@@ -1401,6 +1659,8 @@ EOF
   assert_file_exact_line_count "$gradlew_bat_path" '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*' 1 'Init script duplicated the patched batch Java invocation line.'
 }
 
+# Exercise init-script patching of launcher files that lack trailing newlines so
+# line-ending style is preserved instead of normalized accidentally.
 exercise_init_script_newline_preservation() {
   project_dir=$1
   gradlew_path="$project_dir/gradlew"
@@ -1433,6 +1693,8 @@ EOF
   assert_file_newline_shape "$gradlew_bat_path" crlf no 'Init script did not preserve CRLF newline style without adding a trailing newline to gradlew.bat.'
 }
 
+# Exercise the init-script failure path when gradlew no longer contains the
+# expected POSIX insertion anchor.
 exercise_init_script_gradlew_anchor_failure() {
   project_dir=$1
 
@@ -1461,6 +1723,8 @@ EOF
   assert_last_output_contains 'Unable to find the expected insertion point in gradlew' 'Init script failure output did not mention the unsupported gradlew anchor.'
 }
 
+# Exercise the init-script failure path when gradlew.bat no longer contains the
+# expected Java invocation line to replace.
 exercise_init_script_gradlew_bat_replacement_failure() {
   project_dir=$1
 
@@ -1489,6 +1753,8 @@ EOF
   assert_last_output_contains 'Unable to find the expected replacement point in gradlew.bat' 'Init script failure output did not mention the unsupported gradlew.bat execute line.'
 }
 
+# Run the init-script-focused regression slice on independent fixture copies so
+# launcher mutations from one case cannot mask another.
 run_init_script_focused_suite() {
   test_root=$1
   base_project="$test_root/init-script-base"
@@ -1513,6 +1779,8 @@ run_init_script_focused_suite() {
   exercise_init_script_gradlew_bat_replacement_failure "$scenario_root/unsupported-gradlew-bat-replacement"
 }
 
+# Exercise the end-to-end POSIX installer flow, then upgrade the wrapper to a
+# target version and verify the helper still patches and recovers correctly.
 exercise_wrapper_update_to_version() {
   project_dir=$1
   bootstrap_gradle_version=$2
@@ -1547,6 +1815,8 @@ exercise_wrapper_update_to_version() {
   assert_metadata_for_version "$project_dir" "$updated_version"
 }
 
+# Run the default PowerShell installer smoke path and verify the installed
+# helper/launcher artifacts behave like the POSIX path.
 run_powershell_installer_flow() {
   project_dir=$1
   log "running default PowerShell installer flow in '$project_dir'"
@@ -1566,6 +1836,8 @@ run_powershell_installer_flow() {
   assert_metadata_for_version "$project_dir" "$installed_version"
 }
 
+# Exercise the shared launcher-patch contract across install and init-script
+# sources so one path cannot silently drift from the others.
 exercise_launcher_patch_contract_consistency() {
   log 'checking launcher patch contract consistency across install and init-script sources'
 
@@ -1591,6 +1863,8 @@ for name, text in texts.items():
 PY
 }
 
+# Run the helper edge-case matrix for both shells on isolated fixture copies so
+# recovery, rejection, and timeout behaviors stay symmetric.
 run_helper_edge_case_suite() {
   test_root=$1
   posix_base_project=$2
@@ -1690,6 +1964,8 @@ run_helper_edge_case_suite() {
   exercise_powershell_helper_init_script_output "$scenario_root/powershell helper with spaces"
 }
 
+# Run the bootstrap installer matrix covering template guards, manifest/signature
+# failures, and the happy path for both POSIX and PowerShell entrypoints.
 run_bootstrap_suite() {
   test_root=$1
 
@@ -1706,6 +1982,8 @@ run_bootstrap_suite() {
   exercise_bootstrap_success "$test_root/bootstrap-success-powershell" powershell
 }
 
+# Run the full default integration suite used by `make test`, including the
+# normalizer contract, installer flows, helper edge cases, and bootstrap checks.
 run_default_integration_suite() {
   require_base_commands
   require_command pwsh
@@ -1713,6 +1991,7 @@ run_default_integration_suite() {
   trap 'stop_test_http_server; rm -rf "$test_root"' EXIT HUP INT TERM
 
   log "starting default integration suite (test_root='$test_root')"
+  exercise_output_normalization_contract
   exercise_launcher_patch_contract_consistency
   exercise_wrapper_update_to_version "$test_root/posix-installer" '' "$UPDATED_GRADLE_VERSION"
   run_powershell_installer_flow "$test_root/powershell-installer"
@@ -1732,6 +2011,8 @@ run_default_integration_suite() {
   log 'all helper-tool integration checks passed.'
 }
 
+# Run one version-exercise entry under a controlled Java/Gradle toolchain so the
+# caller can probe support for a single target wrapper version.
 run_single_version_exercise() {
   bootstrap_gradle_version=$1
   target_version=$2
@@ -1746,6 +2027,8 @@ run_single_version_exercise() {
   log "Gradle $target_version wrapper exercise passed (bootstrap Gradle: $bootstrap_gradle_version, Java: $version_exercise_java_version)."
 }
 
+# Run the single-version exercise for many targets and summarize which Gradle
+# versions passed or failed in this environment.
 run_version_list_exercise() {
   [ "$#" -gt 0 ] || fail 'version-list requires one or more explicit Gradle versions.'
   mkdir -p "$BUILD_DIR/version-list"
@@ -1775,6 +2058,8 @@ run_version_list_exercise() {
   fi
 }
 
+# Dispatch the script's supported modes so the same file can serve both the
+# default integration suite and the explicit version-exercise entrypoints.
 main() {
   mode=${1:-default}
   case "$mode" in
