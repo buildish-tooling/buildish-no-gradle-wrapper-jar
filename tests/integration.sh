@@ -988,8 +988,10 @@ exercise_helper_symlink_rejection() {
 
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_failed "$helper_kind helper unexpectedly accepted a symlinked $target_kind path."
+  # The fragmented checks are there because Windows PowerShell wraps the message across several lines with extra noise.
   assert_last_output_contains "$expected_label" "$helper_kind helper failure output did not identify the symlink-rejected $target_kind target."
-  assert_last_output_contains 'must not be a symbolic' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
+  assert_last_output_contains 'must not be a' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
+  assert_last_output_contains 'symbolic' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
   assert_last_output_contains 'link:' "$helper_kind helper failure output did not mention the symlink rejection for $target_kind."
 }
 
@@ -1018,7 +1020,7 @@ exercise_installer_missing_properties_failure() {
 
   "run_${installer_kind}_installer_capture" "$project_dir"
   assert_last_command_failed "$installer_kind installer unexpectedly succeeded without gradle-wrapper.properties."
-
+  # The fragmented checks are there because Windows PowerShell wraps the message across several lines with extra noise.
   assert_last_output_contains 'Gradle wrapper properties file' "$installer_kind installer failure output did not mention the missing gradle-wrapper.properties file."
   assert_last_output_contains 'was not found' "$installer_kind installer failure output did not mention that gradle-wrapper.properties was missing."
 }
@@ -1266,6 +1268,7 @@ exercise_helper_missing_properties_failure() {
 
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_failed "$helper_kind helper unexpectedly succeeded without gradle-wrapper.properties."
+  # The fragmented checks are there because Windows PowerShell wraps the message across several lines with extra noise..
   assert_last_output_contains 'Gradle wrapper properties file' "$helper_kind helper failure output did not mention the missing gradle-wrapper.properties file."
   assert_last_output_contains 'was not' "$helper_kind helper failure output did not mention that gradle-wrapper.properties was missing."
   assert_last_output_contains 'gradle-wrapper.properties' "$helper_kind helper failure output did not mention the missing gradle-wrapper.properties path."
