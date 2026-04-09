@@ -35,6 +35,24 @@ EOF
   assert_last_output_contains 'release placeholders' 'normalized PowerShell stderr did not collapse wrapped message fragments into one searchable sentence.'
   [ "$CAPTURED_OUTPUT" != "$CAPTURED_OUTPUT_NORMALIZED" ] || fail 'PowerShell stderr normalization did not remove the presentation-only render block.'
 
+  python3 - <<'PY' "$output_file"
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_bytes(
+    b'\x1b[31;1mWrite-Error: /tmp/buildish-no-gradle-wrapper-jar.ps1:708\x1b[0m\n'
+    b'\x1b[31;1mLine |\x1b[0m\n'
+    b'\x1b[31;1m 708 |  \xe2\x80\xa6 Write-Error "buildish-no-gradle-wrapper-jar: $($_.Exception.Message)"\x1b[0m\n'
+    b'\x1b[31;1m     |                                                   ~~~~~~~~~~~~~~~~~~~~\x1b[0m\n'
+    b'\x1b[31;1m     | buildish-no-gradle-wrapper-jar: wrapper checksum must not be a symbolic\x1b[0m\n'
+    b'\x1b[31;1m     | link:\x1b[0m\n'
+    b"\x1b[31;1m     | '/tmp/gradle-wrapper-8.14.4.sha256'.\x1b[0m\n"
+)
+PY
+  store_captured_output_from_file "$output_file"
+  assert_last_output_contains 'wrapper checksum must not be a symbolic link:' 'normalized PowerShell Write-Error stderr did not collapse wrapped message fragments into one searchable sentence when ANSI terminal sequences were present.'
+  assert_last_output_not_contains 'Line |' 'normalized PowerShell Write-Error stderr still contained the presentation-only render block header.'
+
   cat >"$output_file" <<'EOF'
 plain linux stderr line
 EOF

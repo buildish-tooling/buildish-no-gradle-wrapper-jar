@@ -45,6 +45,11 @@ lines = text.split('\n')
 normalized_lines = []
 powershell_message_fragments = []
 inside_powershell_render_block = False
+ansi_escape_pattern = re.compile(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])')
+
+
+def strip_terminal_escape_sequences(value: str) -> str:
+    return ansi_escape_pattern.sub('', value)
 
 
 def flush_powershell_message_fragments() -> None:
@@ -56,16 +61,18 @@ def flush_powershell_message_fragments() -> None:
 
 
 for line in lines:
-    if line.strip() == 'Line |':
+    display_line = strip_terminal_escape_sequences(line)
+
+    if display_line.strip() == 'Line |':
         flush_powershell_message_fragments()
         inside_powershell_render_block = True
         continue
 
     if inside_powershell_render_block:
-        if re.match(r'^\s*[0-9]+\s+\|\s', line):
+        if re.match(r'^\s*[0-9]+\s+\|\s', display_line):
             continue
 
-        match = re.match(r'^\s*\|\s?(.*)$', line)
+        match = re.match(r'^\s*\|\s?(.*)$', display_line)
         if match is not None:
             fragment = match.group(1).strip()
             if fragment and re.fullmatch(r'~+', fragment) is None:
@@ -74,7 +81,7 @@ for line in lines:
 
         flush_powershell_message_fragments()
 
-    normalized_lines.append(line)
+    normalized_lines.append(display_line)
 
 flush_powershell_message_fragments()
 print('\n'.join(normalized_lines), end='')
