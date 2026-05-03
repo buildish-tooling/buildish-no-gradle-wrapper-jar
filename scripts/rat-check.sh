@@ -82,4 +82,6 @@ tar -xzf "$ARCHIVE_PATH" -C "$work_dir"
 rat_jar="$work_dir/apache-rat-${RAT_VERSION}/apache-rat-${RAT_VERSION}.jar"
 input_source="$work_dir/input-source.txt"
 
-java -jar "$rat_jar" -- "$REPO_ROOT"
+java -jar "$rat_jar" \
+  --output-style unapproved-licenses \
+  -- "$REPO_ROOT"
