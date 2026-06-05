@@ -22,4 +22,4 @@ Use the unreleased docs for installation, helper behavior, adoption steps, devel
 
 See the [security and trust model](./security/) for the current assessment, trust boundaries, and operator-facing security guidance.
 
-{{< buildish-component-link kind="docs" label="Open Docs" appearance="primary" >}}
+{{< buildish-component-link kind="development" label="Open Docs" appearance="primary" >}}
