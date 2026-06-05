@@ -22,3 +22,12 @@ Please report suspected security issues to [security@apache.org](mailto:security
 
 For the current no-gradle-wrapper-jar trust model and security assessment, see
 [`site/pages/security.md`](./site/pages/security.md).
+
+## Threat Model
+
+The Buildish project maintains a threat model in
+[docs/threat-model.md](docs/threat-model.md). It documents
+security boundaries, in-scope vs. out-of-scope issues, trust assumptions,
+security invariants, and triage guidance — useful both for human
+reviewers handling reports and for automated security tooling that
+consults the model before scanning.
