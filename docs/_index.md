@@ -310,3 +310,6 @@ through `9.4`:
 That version exercise is a record of test coverage in this repository, not a compatibility promise
 or formal support guarantee for every project layout, operating system, shell environment, or future
 Gradle release.
+
+The default CI and integration suite additionally bootstrap with Gradle `9.6.1`, covering its
+current POSIX and Windows launcher shapes.

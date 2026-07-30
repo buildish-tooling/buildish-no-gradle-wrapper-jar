@@ -36,19 +36,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Java 21
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Install Gradle 8.14.4
+      - name: Install Gradle 9.6.1
         env:
-          GRADLE_VERSION: 8.14.4
+          GRADLE_VERSION: 9.6.1
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/gradle-${GRADLE_VERSION}-bin.zip"
@@ -76,19 +76,19 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Java 21
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Install Gradle 8.14.4
+      - name: Install Gradle 9.6.1
         env:
-          GRADLE_VERSION: 8.14.4
+          GRADLE_VERSION: 9.6.1
         shell: pwsh
         run: |
           $archive = Join-Path -Path $env:RUNNER_TEMP -ChildPath "gradle-$env:GRADLE_VERSION-bin.zip"
@@ -138,9 +138,9 @@ jobs:
       - name: Install GnuPG
         shell: pwsh
         env:
-          GNUPG_WINDOWS_INSTALLER_URL: https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.18_20260224.exe
+          GNUPG_WINDOWS_INSTALLER_URL: https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.21_20260702.exe
           # See ../signatures/README.md for details on the pinned allowed GnuPG release-signing public key.
-          GNUPG_WINDOWS_INSTALLER_SIGNATURE_PATH: .github/signatures/gnupg-w32-2.5.18_20260224.exe.sig
+          GNUPG_WINDOWS_INSTALLER_SIGNATURE_PATH: .github/signatures/gnupg-w32-2.5.21_20260702.exe.sig
           GNUPG_WINDOWS_SIGNATURE_KEY_PATH: .github/signatures/signature_key.asc
           GNUPG_WINDOWS_ALLOWED_SIGNER_FINGERPRINT: 6DAA6E64A76D2840571B4902528897B826403ADA
         run: |
@@ -250,18 +250,18 @@ jobs:
       security-events: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3.35.1
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           languages: kotlin
           build-mode: none
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@5c8a8a642e79153f5d047b10ec1cba1d1cc65699 # v3.35.1
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
 
   zizmor:
     name: zizmor
@@ -271,12 +271,12 @@ jobs:
       contents: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5 # v0.6.1
         with:
           advanced-security: false
 

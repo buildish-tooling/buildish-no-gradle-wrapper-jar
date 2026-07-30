@@ -261,6 +261,7 @@ shared_patterns = [
     r'org\.gradle\.wrapper\.GradleWrapperMain %\*',
     r'-classpath .*gradle-wrapper\.jar.* %\*',
     r'-jar .*gradle-wrapper\.jar.* %\*',
+    r'endlocal .* %\* .* call :exitWithErrorLevel',
 ]
 
 for name, text in texts.items():

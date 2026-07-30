@@ -123,11 +123,13 @@ function New-BuildishInstallTempPath {
 function Add-BuildishBatchHelperArgumentsToExecuteLine {
   param([string]$ExecuteLine)
 
-  if (-not $ExecuteLine.EndsWith(' %*')) {
+  $argumentMarker = ' %*'
+  $argumentIndex = $ExecuteLine.IndexOf($argumentMarker, [System.StringComparison]::Ordinal)
+  if ($argumentIndex -lt 0 -or $argumentIndex -ne $ExecuteLine.LastIndexOf($argumentMarker, [System.StringComparison]::Ordinal)) {
     throw "Unsupported batch execute line shape: '$ExecuteLine'."
   }
 
-  return $ExecuteLine.Substring(0, $ExecuteLine.Length - ' %*'.Length) + ' %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*'
+  return $ExecuteLine.Insert($argumentIndex, ' %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS%')
 }
 
 # Local-copy variant used by integration tests and verified bootstrap handoff.
@@ -381,8 +383,8 @@ try {
 
   # Windows launcher patch structure: first capture helper-emitted arguments into
   # an environment variable, then splice that variable into the final Java line.
-  # The pre-8.14 classpath/main-class form plus the later `-jar` forms are
-  # supported so the installer spans multiple Gradle minor lines explicitly.
+  # The pre-8.14 classpath/main-class form plus the later `-jar` forms, including
+  # Gradle 9's endlocal wrapper, are supported explicitly.
   $GradlewCurrentAnchor = 'APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf ''%s\n'' "$PWD" ) || exit'
   $GradlewOldAnchor = 'APP_HOME=$( cd "${APP_HOME:-./}" && pwd -P ) || exit'
   $GradlewBatAnchor = 'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi'
@@ -397,7 +399,8 @@ if errorlevel 1 goto fail
   $GradlewBatSupportedExecuteLines = @(
     '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*',
     '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*',
-    '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*'
+    '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*',
+    'endlocal & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %* & call :exitWithErrorLevel'
   )
   $GradlewBatSupportedExecuteLineReplacements = @($GradlewBatSupportedExecuteLines | ForEach-Object {
     @{ Current = $_; Replacement = (Add-BuildishBatchHelperArgumentsToExecuteLine -ExecuteLine $_) }

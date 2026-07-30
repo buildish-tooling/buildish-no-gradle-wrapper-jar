@@ -21,7 +21,7 @@ to verify the fast Windows GnuPG bootstrap download before extraction.
 
 ## Files
 
-- `gnupg-w32-2.5.18_20260224.exe.sig`
+- `gnupg-w32-2.5.21_20260702.exe.sig`
   - Detached OpenPGP signature for the exact Windows installer downloaded by CI.
   - This file is intentionally stored in the upstream binary `.sig` form.
   - Binary detached signatures are standard OpenPGP artifacts; they are not less trusted

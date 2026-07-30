@@ -65,11 +65,20 @@ val batchExecuteLines =
     "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" org.gradle.wrapper.GradleWrapperMain %*",
     "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %*",
     "\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %*",
+    "endlocal & \"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -jar \"%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar\" %* & call :exitWithErrorLevel",
   )
 
 fun patchBatchExecuteLine(currentLine: String): String {
-  require(currentLine.endsWith(" %*")) { "Unsupported batch execute line shape: '$currentLine'" }
-  return currentLine.removeSuffix(" %*") + " %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*"
+  val argumentMarker = " %*"
+  val argumentIndex = currentLine.indexOf(argumentMarker)
+  require(
+    argumentIndex >= 0 && currentLine.indexOf(argumentMarker, argumentIndex + argumentMarker.length) < 0
+  ) {
+    "Unsupported batch execute line shape: '$currentLine'"
+  }
+  return currentLine.substring(0, argumentIndex) +
+    " %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS%" +
+    currentLine.substring(argumentIndex)
 }
 
 val batchExecuteLineReplacements =

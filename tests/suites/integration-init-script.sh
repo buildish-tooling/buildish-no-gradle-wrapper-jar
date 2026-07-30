@@ -57,7 +57,7 @@ tasks.named('wrapper') {
       'for /f "delims=" %%a in (\'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\\gradle\\buildish-no-gradle-wrapper-jar.ps1"\') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a',
       'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=',
       'if errorlevel 1 goto fail',
-      '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*',
+      'endlocal & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\\gradle\\wrapper\\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %* & call :exitWithErrorLevel',
     ].join('\r\n'), 'UTF-8')
   }
 }
@@ -73,7 +73,7 @@ EOF
   assert_last_command_succeeded 'Init script unexpectedly duplicated an already patched launcher.'
   assert_file_exact_line_count "$gradlew_path" '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' 1 'Init script duplicated the POSIX helper include in an already patched gradlew.'
   assert_file_exact_line_count "$gradlew_bat_path" 'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*' 1 'Init script duplicated the batch helper block in an already patched gradlew.bat.'
-  assert_file_exact_line_count "$gradlew_bat_path" '"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %*' 1 'Init script duplicated the patched batch Java invocation line.'
+  assert_file_exact_line_count "$gradlew_bat_path" 'endlocal & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %* & call :exitWithErrorLevel' 1 'Init script duplicated the patched batch Java invocation line.'
 }
 
 # Exercise init-script patching of launcher files that lack trailing newlines so
