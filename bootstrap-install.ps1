@@ -143,21 +143,17 @@ function Invoke-Gpg {
     [string]$FailurePrefix
   )
 
-  $stdoutPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-bootstrap-install-gpg-stdout-$([System.Guid]::NewGuid()).txt"
-  $stderrPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-bootstrap-install-gpg-stderr-$([System.Guid]::NewGuid()).txt"
-
-  try {
-    $process = Start-Process -FilePath $GpgCommand -ArgumentList (@('--homedir', $GpgHome, '--batch', '--no-options', '--no-autostart') + $Arguments) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    $stdout = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
-    $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
-    $output = ($stdout, $stderr | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join ''
-    if ($process.ExitCode -ne 0) {
-      throw "${FailurePrefix}: ($($process.ExitCode)) $output"
-    }
-    return $output
-  } finally {
-    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+  # Invoke GPG directly so PowerShell waits for the native process and captures
+  # both streams before control returns. Start-Process output-file redirection
+  # can expose an empty file briefly even after the process reports completion.
+  $commandArguments = @('--homedir', $GpgHome, '--batch', '--no-options', '--no-autostart') + $Arguments
+  $capturedOutput = @(& $GpgCommand @commandArguments 2>&1)
+  $exitCode = $LASTEXITCODE
+  $output = ($capturedOutput | ForEach-Object { $_.ToString() }) -join [System.Environment]::NewLine
+  if ($exitCode -ne 0) {
+    throw "${FailurePrefix}: ($exitCode) $output"
   }
+  return $output
 }
 
 function Verify-Signature {

@@ -433,7 +433,7 @@ function Save-BuildishNoGradleWrapperJarDownloadedFile {
     $client.Timeout = [System.TimeSpan]::FromSeconds($BuildishHttpTimeoutSeconds)
     $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
     $response = Wait-BuildishNoGradleWrapperJarTask -Task ($client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)) -Deadline $deadline -Operation $downloadOperation -TimeoutDescription $timeoutDescription
-    $response.EnsureSuccessStatusCode()
+    [void]($response.EnsureSuccessStatusCode())
 
     $contentLength = $response.Content.Headers.ContentLength
     if ($null -ne $contentLength -and $contentLength -gt $MaxBytes) {
@@ -532,25 +532,17 @@ function Invoke-BuildishNoGradleWrapperJarGpg {
     [string]$FailurePrefix
   )
 
-  $stdoutPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-stdout-$([System.Guid]::NewGuid()).txt"
-  $stderrPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "buildish-no-gradle-wrapper-jar-gpg-stderr-$([System.Guid]::NewGuid()).txt"
-
-  try {
-    # The helper only performs public-key inspection and detached-signature
-    # verification; it never needs secret-key or pinentry flows. Disable agent
-    # auto-start so mismatched Windows/MSYS agent shims do not break verification.
-    $process = Start-Process -FilePath $GpgCommand -ArgumentList (@('--homedir', $GpgHome, '--batch', '--no-options', '--no-autostart') + $Arguments) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-    $stdout = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
-    $stderr = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
-    $output = ($stdout, $stderr | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join ''
-    $exitCode = $process.ExitCode
-    if ($exitCode -ne 0) {
-      throw "${FailurePrefix}: ($exitCode) $output"
-    }
-    return $output
-  } finally {
-    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+  # Invoke GPG directly so PowerShell waits for the native process and captures
+  # both streams before control returns. Start-Process output-file redirection
+  # can expose an empty file briefly even after the process reports completion.
+  $commandArguments = @('--homedir', $GpgHome, '--batch', '--no-options', '--no-autostart') + $Arguments
+  $capturedOutput = @(& $GpgCommand @commandArguments 2>&1)
+  $exitCode = $LASTEXITCODE
+  $output = ($capturedOutput | ForEach-Object { $_.ToString() }) -join [System.Environment]::NewLine
+  if ($exitCode -ne 0) {
+    throw "${FailurePrefix}: ($exitCode) $output"
   }
+  return $output
 }
 
 # Perform detached-signature verification in a fresh temporary GPG home. This

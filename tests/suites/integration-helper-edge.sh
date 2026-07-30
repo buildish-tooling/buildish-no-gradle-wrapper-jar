@@ -257,6 +257,15 @@ exercise_helper_two_segment_version_support() {
   "run_${helper_kind}_helper_direct" "$project_dir"
   assert_last_command_succeeded "$helper_kind helper did not support the two-segment Gradle version '$target_version'."
   assert_metadata_for_version "$project_dir" "$target_version"
+
+  if [ "$helper_kind" = powershell ]; then
+    init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+    case $init_script_path in
+      *[[:space:]]*) expected_output="--init-script \"$init_script_path\"" ;;
+      *) expected_output="--init-script $init_script_path" ;;
+    esac
+    assert_last_output_equals "$expected_output" 'PowerShell helper emitted diagnostics or HTTP response objects while downloading and verifying a two-segment Gradle wrapper.'
+  fi
 }
 
 # Exercise POSIX helper argument deduplication across the split and compact
