@@ -1,5 +1,5 @@
 <!--
- Copyright 2026 The Apache Software Foundation
+ Copyright 2026 The Buildish Authors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ The repository now also contains tiny `bootstrap-install.*` verifier templates d
 
 Those templates verify a signed per-platform payload manifest and then hand off via
 `--trusted-source-dir`, but they intentionally fail closed until a release step renders real release
-URLs and ASF-managed signing-key material.
+URLs and Buildish-managed signing-key material.
 
 The same warning applies to trusted-input overrides:
 
@@ -122,7 +122,7 @@ project-local cache or from the network.
 
 The main residual design limitation is earlier in the bootstrap chain: the secure, release-based
 `bootstrap-install.*` verifier logic now exists in-repo, but rendered release copies and the real
-ASF-managed signing key are not operationally published yet.
+Buildish-managed signing key are not operationally published yet.
 
 The repository also ships explicit `unsafe-dev-install.*` shortcuts for people who consciously want
 a blind-trust development flow against the current main branch. Those scripts are intentionally
@@ -175,7 +175,7 @@ Affecting area:
 > [!NOTE]
 > `install.sh` and `install.ps1` are already local-only stagers, and `bootstrap-install.*` verifier
 > logic now exists in-repo. The remaining missing piece is release-time rendering/publishing with
-> real URLs and ASF-managed signing-key material.
+> real URLs and Buildish-managed signing-key material.
 
 Impact:
 
@@ -197,7 +197,8 @@ Recommendation:
 - Wire release automation so it renders and publishes `bootstrap-install.*` with hard-coded release
   URLs and the real signing-key material described in
   [site/pages/secure-installer-approach.md](site/pages/secure-installer-approach.md).
-- Manage and publish the ASF-controlled signing key and supporting `KEYS` material for operators.
+- Manage and publish the Buildish-controlled signing key and supporting `KEYS`
+  material for operators.
 - Keep `install.*` as trusted-local-only stagers.
 - Keep `unsafe-dev-install.*` loudly unsafe, opt-in, and blocked in CI.
 

@@ -1,5 +1,5 @@
 <!--
-  Copyright 2026 The Apache Software Foundation
+  Copyright 2026 The Buildish Authors
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@
 This repository contains the copyable helper blueprint for projects that want local `gradlew` /
 `gradlew.bat` usage without checking `gradle/wrapper/gradle-wrapper.jar` into source control.
 
-Project documentation now lives on the Apache Buildish site:
+Project documentation now lives on the Buildish site:
 
-- <https://buildish.apache.org/components/no-gradle-wrapper-jar/>
+- <https://buildish.org/components/no-gradle-wrapper-jar/>
 
 Use the site page for installation, helper behavior, adoption steps, development verification, and
 current validation scope.
@@ -29,7 +29,3 @@ current validation scope.
 ## License
 
 See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
-
-## Incubation status
-
-See [`DISCLAIMER`](DISCLAIMER).

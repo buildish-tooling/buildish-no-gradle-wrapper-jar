@@ -4,7 +4,7 @@ description: Current bootstrap verifier design plus the remaining release render
 ---
 
 <!--
-  Copyright 2026 The Apache Software Foundation
+  Copyright 2026 The Buildish Authors
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -60,13 +60,13 @@ network fetch inside `install.sh` or `install.ps1`.
 
 ## Where the `KEYS` file lives
 
-The project signing `KEYS` file should live in the ASF distribution area at a stable ASF-hosted
-non-release location, for example under `downloads.apache.org`.
+The project signing `KEYS` file should live at the stable,
+non-release URL <https://buildish.org/KEYS>.
 
 That matters because `KEYS` should not be treated as just another GitHub release asset downloaded
 from the same channel as the installer payload.
 
-For manual verification, that ASF-hosted `KEYS` file is useful and expected.
+For manual verification, that Buildish-hosted `KEYS` file is useful and expected.
 
 For the automated bootstrap path, the safer design is still to pin the expected release-signing key
 fingerprint or armored public key directly in the tiny bootstrap script. A runtime-downloaded
@@ -86,7 +86,7 @@ Users are not locked into the bootstrap scripts, though. If a bootstrap script f
 expected tools are missing, or if a user prefers to inspect every step directly, they can fall back
 to the manual verification approach: download the installer payload set plus its matching signed
 checksum manifest (`*.sha256` and `*.sha256.asc`), verify the manifest signature with the
-ASF-hosted `KEYS` material, verify each payload checksum from that manifest, and only then execute
+Buildish-hosted `KEYS` material, verify each payload checksum from that manifest, and only then execute
 the installer with `--trusted-source-dir` pointing at the verified local payload directory. The
 bootstrap scripts are meant to automate those same steps in a small and reviewable form.
 
@@ -182,7 +182,7 @@ require_command curl_or_wget
 require_command sha256sum_or_shasum
 
 key_fingerprint='PINNED_RELEASE_SIGNING_KEY'
-base_url='https://github.com/apache/buildish-no-gradle-wrapper-jar/releases/download/vX.Y.Z'
+base_url='https://github.com/buildish-tooling/buildish-no-gradle-wrapper-jar/releases/download/vX.Y.Z'
 manifest='bootstrap-install-posix.sha256'
 payload_dir='./verified-payload'
 
@@ -200,7 +200,7 @@ Require-NativeWindowsGpg
 Require-Command Invoke-WebRequest
 
 $expectedFingerprint = 'PINNED_RELEASE_SIGNING_KEY'
-$baseUrl = 'https://github.com/apache/buildish-no-gradle-wrapper-jar/releases/download/vX.Y.Z'
+$baseUrl = 'https://github.com/buildish-tooling/buildish-no-gradle-wrapper-jar/releases/download/vX.Y.Z'
 $manifest = 'bootstrap-install-powershell.sha256'
 $manifestSignature = "$manifest.asc"
 $payloadDirectory = '.\verified-payload'
@@ -226,7 +226,7 @@ Their only job is to establish trust in the downloaded installer payload and the
 ## Recommendation summary
 
 - publish the real installers as immutable GitHub release assets
-- keep `KEYS` in the ASF distribution area, not as a release asset
+- keep `KEYS` at <https://buildish.org/KEYS>, not as a release asset
 - keep `bootstrap-install.*` tiny and release-rendered
 - pin release-signing trust material in those bootstrap scripts
 - hand off from bootstrap into `install.*` via `--trusted-source-dir`

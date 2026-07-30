@@ -1,5 +1,5 @@
 <#
- Copyright 2026 The Apache Software Foundation
+ Copyright 2026 The Buildish Authors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
 #>
 
 <#
-PowerShell installer for the Apache Buildish no-gradle-wrapper-jar helper tool.
-https://buildish.apache.org/components/no-gradle-wrapper-jar/
+PowerShell installer for the Buildish no-gradle-wrapper-jar helper tool.
+https://buildish.org/components/no-gradle-wrapper-jar/
 
 The installer assumes it is run against an existing Gradle project that already
 contains the generated wrapper launchers and `gradle-wrapper.properties`. It then:

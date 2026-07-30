@@ -1,5 +1,5 @@
 <!--
-  Copyright 2026 The Apache Software Foundation
+  Copyright 2026 The Buildish Authors
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -71,8 +71,9 @@ For each release, publish at least these assets:
 - `bootstrap-install-powershell.sha256`
 - `bootstrap-install-powershell.sha256.asc`
 
-Supporting operator material should still include the ASF-hosted `KEYS` file outside the GitHub
-release asset channel.
+Supporting operator material should still include the
+[Buildish `KEYS` file](https://buildish.org/KEYS) outside the GitHub release
+asset channel.
 
 ## Release-time rendering inputs
 
@@ -87,9 +88,9 @@ scripts.
 
 ## Release signing key management
 
-- Create an ASF-controlled signing key for bootstrap release payloads.
+- Create a Buildish-controlled signing key for bootstrap release payloads.
 - Export the public key in ASCII-armored form for embedding into the rendered bootstrap scripts.
-- Publish the public key via ASF-managed `KEYS` material for manual verification.
+- Publish the public key via <https://buildish.org/KEYS> for manual verification.
 - Document how key rotation updates the pinned fingerprint and embedded key material.
 
 ## Release automation steps
@@ -122,6 +123,6 @@ Keep verification coverage for at least these cases:
 
 ## Remaining work
 
-- create and manage the real ASF-controlled bootstrap signing key,
+- create and manage the real Buildish-controlled bootstrap signing key,
 - wire release automation to render and publish the bootstrap assets,
 - decide how key rotation and release URL versioning are documented for operators.

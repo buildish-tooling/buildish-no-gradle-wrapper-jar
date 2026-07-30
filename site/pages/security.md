@@ -4,7 +4,7 @@ description: Security properties, trust boundaries, and the current assessment f
 ---
 
 <!--
-  Copyright 2026 The Apache Software Foundation
+  Copyright 2026 The Buildish Authors
 
   Licensed under the Apache License, Version 2.0 (the "License");
   you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ For the planned hardened installer delivery model, see:
 
 For the full repository-level assessment, findings, and threat-model answers, see:
 
-- [Full security assessment](https://github.com/apache/buildish-no-gradle-wrapper-jar/blob/main/SECURITY-ASSESSMENT.md)
+- [Full security assessment](https://github.com/buildish-tooling/buildish-no-gradle-wrapper-jar/blob/main/SECURITY-ASSESSMENT.md)
 
 ## Trust model
 
@@ -121,7 +121,7 @@ this repository.
 
 `install.sh` and `install.ps1` no longer have a helper-download trust gap, and the repository now
 contains the secure `bootstrap-install.*` verification logic. The remaining operational limitation is
-that end users still need rendered release copies with real release URLs and ASF-managed signing-key
+that end users still need rendered release copies with real release URLs and Buildish-managed signing-key
 material before that path is fully shipped.
 
 The repository now also ships explicit `unsafe-dev-install.*` shortcuts for people who consciously

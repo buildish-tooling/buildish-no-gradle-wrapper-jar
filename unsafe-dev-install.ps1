@@ -1,5 +1,5 @@
 <#!
- Copyright 2026 The Apache Software Foundation
+ Copyright 2026 The Buildish Authors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $Tool = 'buildish-no-gradle-wrapper-jar unsafe-dev-install'
-$DefaultBaseUrl = 'https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
+$DefaultBaseUrl = 'https://raw.githubusercontent.com/buildish-tooling/buildish/main/tools/buildish-no-gradle-wrapper-jar'
 $BaseUrl = if ([string]::IsNullOrWhiteSpace($env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL)) { $DefaultBaseUrl } else { $env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL }
 $Files = @('install.ps1', 'buildish-no-gradle-wrapper-jar.sh', 'buildish-no-gradle-wrapper-jar.ps1', 'buildish-no-gradle-wrapper-jar.init.gradle.kts')
 

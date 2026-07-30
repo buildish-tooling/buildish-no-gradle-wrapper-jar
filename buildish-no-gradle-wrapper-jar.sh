@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright 2026 The Apache Software Foundation
+# Copyright 2026 The Buildish Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Apache Buildish no-gradle-wrapper-jar helper for POSIX `gradlew`
-# https://buildish.apache.org/components/no-gradle-wrapper-jar/
+# Buildish no-gradle-wrapper-jar helper for POSIX `gradlew`
+# https://buildish.org/components/no-gradle-wrapper-jar/
 #
 # This file is sourced from the generated `gradlew` launcher after `APP_HOME` has
 # been resolved by the launcher itself.

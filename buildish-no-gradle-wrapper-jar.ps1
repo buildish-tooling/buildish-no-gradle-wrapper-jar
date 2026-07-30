@@ -1,5 +1,5 @@
 <#
- Copyright 2026 The Apache Software Foundation
+ Copyright 2026 The Buildish Authors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
 #>
 
 <#
-Apache Buildish no-gradle-wrapper-jar helper for Windows `gradlew.bat`
-https://buildish.apache.org/components/no-gradle-wrapper-jar/
+Buildish no-gradle-wrapper-jar helper for Windows `gradlew.bat`
+https://buildish.org/components/no-gradle-wrapper-jar/
 
 This helper is invoked from `gradlew.bat` after `%APP_HOME%` has been resolved.
 

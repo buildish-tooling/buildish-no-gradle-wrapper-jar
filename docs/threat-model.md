@@ -4,7 +4,7 @@ description: Threat boundaries, security properties, and triage dispositions for
 ---
 
 <!--
- Copyright 2026 The Apache Software Foundation
+ Copyright 2026 The Buildish Authors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ Threat model author: generated draft for maintainer review. *(documented)*
 
 Status: draft, pending maintainer review as of 2026-06-05. *(documented)*
 
-Reporting cross-reference: suspected findings that violate the claimed properties in [§8](#8-security-properties-the-project-provides) should be reported per [`SECURITY.md`](../SECURITY.md); findings that fall under [§3](#3-out-of-scope-explicit-non-goals) or [§9](#9-security-properties-the-project-does-not-provide) may be closed citing this document. *(documented)*
+Reporting cross-reference: suspected findings that violate the claimed properties in [§8](#8-security-properties-the-project-provides) should be reported per the [Buildish security policy](https://buildish.org/community/security/); findings that fall under [§3](#3-out-of-scope-explicit-non-goals) or [§9](#9-security-properties-the-project-does-not-provide) may be closed citing this document. *(documented)*
 
 Provenance legend: *(documented)* means stated in repository code, tests, or documentation; *(maintainer)* means explicitly confirmed by maintainers after review; *(inferred)* means derived from current implementation or project structure and requires confirmation before ratification.
 
@@ -194,7 +194,7 @@ No-surprise side effects:
 | Knob / variant | Default | Effect on model | Maintainer stance |
 | --- | --- | --- | --- |
 | `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS` | `60` seconds in PowerShell helper | Changes Windows helper network timeout. Invalid or non-positive values fail. Larger values extend time before availability failure. | Supported runtime configuration; production default appears intended. *(documented)* |
-| `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` | Apache Buildish `main` branch raw URL | Changes the remote source for unsafe development installers. This can redirect blind-trust execution. | Development-only unsafe escape hatch; not for CI, automation, or secrets. *(documented)* |
+| `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` | Buildish `main` branch raw URL | Changes the remote source for unsafe development installers. This can redirect blind-trust execution. | Development-only unsafe escape hatch; not for CI, automation, or secrets. *(documented)* |
 | Checked-in `bootstrap-install.*` placeholders | Placeholder URL/key material with hard fail | Repository templates intentionally fail closed until release rendering substitutes immutable URLs and signing trust material. | Template copies are not intended for direct execution. *(documented)* |
 | Release-rendered `bootstrap-install.*` | Not yet operationally published in this repository copy | Establishes verified remote installer delivery if rendered with pinned release URL and signing key material. | Planned/hardened path; publication is remaining release work. *(documented)* |
 | Native Windows GPG vs Git-for-Windows GPG | Native Windows GPG required | Git-for-Windows GPG is rejected; without native GPG, Windows helper verification fails. | Required for Windows `gradlew.bat`. *(documented)* |
@@ -335,7 +335,8 @@ Well-known attack classes left to callers/operators:
 - Compromised developer/CI environment: protect PATH, shell, PowerShell, GPG, JVM, credentials, and environment variables. *(inferred)*
 - Social engineering into unsafe install flows: do not run `unsafe-dev-install.*` in CI, automation, or secret-bearing environments. *(documented)*
 - Distribution ZIP tampering when `distributionSha256Sum` is absent: configure Gradle's distribution checksum pinning. *(documented)*
-- Release-signing key compromise: manage ASF release signing keys and revocation/rotation outside this helper. *(inferred)*
+- Release-signing key compromise: manage Buildish release signing keys and
+  revocation/rotation outside this helper. *(inferred)*
 
 ## 10 Downstream Responsibilities
 
@@ -380,7 +381,8 @@ Revise this model when any of these occur:
 - A new public installer, helper, bootstrap, or runtime entry point is added. *(inferred)*
 - The helper accepts new URL schemes, mirrors, version formats, or artifact sources. *(inferred)*
 - The project starts verifying Gradle distribution ZIPs directly rather than only warning on missing `distributionSha256Sum`. *(inferred)*
-- Release-rendered bootstrap scripts become operationally published with real ASF signing-key material. *(documented)*
+- Release-rendered bootstrap scripts become operationally published with real
+  Buildish signing-key material. *(documented)*
 - The unsafe development installer behavior, acknowledgement gate, CI refusal, or base URL override changes. *(inferred)*
 - Default size limits, timeout behavior, GPG trust roots, or supported launcher anchors change. *(inferred)*
 - Tests, fixtures, generated outputs, or release tooling are promoted into an end-user runtime surface. *(inferred)*
@@ -408,7 +410,9 @@ Wave 1: ratification blockers
 - Should this `docs/threat-model.md` page be the canonical threat model, or should the canonical copy live in `site/pages/` with this file linking to it? Proposed answer: `docs/threat-model.md` is canonical, and site content may summarize/link to it. Lands in §1 and §12. *(inferred)*
 - Is the version-binding statement correct for future releases? Proposed answer: yes, each release should carry the threat model version current at that release. Lands in §1. *(inferred)*
 - Should release-rendered `bootstrap-install.*` be treated as in-scope security functionality once published? Proposed answer: yes, but checked-in templates remain fail-closed placeholders until rendering. Lands in §2, §5a, §8, and §12. *(inferred)*
-- Is compromise of the release-signing key fully out of scope? Proposed answer: yes; release-key operations are an ASF/project release-management responsibility outside this helper's enforceable layer. Lands in §3, §7, and §9. *(inferred)*
+- Is compromise of the release-signing key fully out of scope? Proposed answer:
+  yes; release-key operations are a project release-management responsibility
+  outside this helper's enforceable layer. Lands in §3, §7, and §9. *(inferred)*
 - Is absence of POSIX network timeout an accepted non-property, or should POSIX helper/bootstrap claim timeout-bounded downloads? Proposed answer: currently no POSIX timeout property is claimed. Lands in §6, §8, and §9. *(inferred)*
 
 Wave 2: environment and resource assumptions

@@ -1,4 +1,4 @@
-# Copyright 2026 The Apache Software Foundation
+# Copyright 2026 The Buildish Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 
 component_id: buildish-no-gradle-wrapper-jar
-source_artifact_prefix: apache-buildish-no-gradle-wrapper-jar
+source_artifact_prefix: buildish-no-gradle-wrapper-jar
 asf_dist_dev_base: https://dist.apache.org/repos/dist/dev/incubator/buildish/buildish-no-gradle-wrapper-jar
 asf_dist_release_base: https://dist.apache.org/repos/dist/release/incubator/buildish/buildish-no-gradle-wrapper-jar
 moving_tags_enabled: false
@@ -21,10 +21,10 @@ latest_tag_enabled: false
 secondary_targets:
   - github-release-assets
 final_tag_mode: rc-source-commit
-vote_release_name: Apache Buildish no-gradle-wrapper-jar
+vote_release_name: Buildish no-gradle-wrapper-jar
 incubator_vote_enabled: false
 release_summary_include_final_tag_mode: false
-release_verification_guide_url: https://buildish.apache.org/buildish-no-gradle-wrapper-jar/release-verification/
+release_verification_guide_url: https://buildish.org/components/no-gradle-wrapper-jar/release-verification/
 verify_rc_instructions: |
   Run this bash verification flow on trusted Linux or macOS hardware:
   1. verify .sha512

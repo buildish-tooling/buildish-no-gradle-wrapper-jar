@@ -1,5 +1,5 @@
 /*
- * Copyright 2026 The Apache Software Foundation
+ * Copyright 2026 The Buildish Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ import org.gradle.api.GradleException
 import org.gradle.api.tasks.wrapper.Wrapper
 
 /*
- * Apache Buildish no-gradle-wrapper-jar helper init script.
- * https://buildish.apache.org/components/no-gradle-wrapper-jar/
+ * Buildish no-gradle-wrapper-jar helper init script.
+ * https://buildish.org/components/no-gradle-wrapper-jar/
  *
  * This init script is added to Gradle invocations by the shell/PowerShell helpers.
  * Its only job is to keep the helper installed after `./gradlew wrapper ...`

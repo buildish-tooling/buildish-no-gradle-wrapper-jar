@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright 2026 The Apache Software Foundation
+# Copyright 2026 The Buildish Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 set -eu
 
 TOOL='buildish-no-gradle-wrapper-jar unsafe-dev-install'
-DEFAULT_BASE_URL='https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar'
+DEFAULT_BASE_URL='https://raw.githubusercontent.com/buildish-tooling/buildish/main/tools/buildish-no-gradle-wrapper-jar'
 BASE_URL=${BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL:-$DEFAULT_BASE_URL}
 FILES='install.sh buildish-no-gradle-wrapper-jar.sh buildish-no-gradle-wrapper-jar.ps1 buildish-no-gradle-wrapper-jar.init.gradle.kts'
 

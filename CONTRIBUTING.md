@@ -1,5 +1,5 @@
 <!--
-Copyright 2026 The Apache Software Foundation
+Copyright 2026 The Buildish Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Contributing to Apache Buildish
+# Contributing to Buildish
 
-Thank you for considering a contribution to Apache Buildish.
+Thank you for considering a contribution to Buildish.
 
 ## Before opening a pull request
 
@@ -33,7 +33,7 @@ Thank you for considering a contribution to Apache Buildish.
 
 ## Security issues
 
-Do **not** open a public issue for a suspected security vulnerability. Instead, report it to [security@apache.org](mailto:security@apache.org).
+Do **not** open a public issue for a suspected security vulnerability. Instead, report it to [security@buildish.org](mailto:security@buildish.org).
 
 ## Development
 
@@ -67,9 +67,10 @@ Equivalent npm script:
 
 The Makefile verifies the expected `node` and `npm` versions before running user-facing targets.
 
-`npm run release-legal:write` refreshes `legal/github/LICENSE` and `legal/github/NOTICE` for the bundled GitHub action
-distribution. Those files are separate from the repository-root `LICENSE` / `NOTICE`, which remain the ASF project legal
-files.
+`npm run release-legal:write` refreshes `legal/github/LICENSE` and
+`legal/github/NOTICE` for the bundled GitHub action distribution. Those files
+are separate from the repository-root `LICENSE` / `NOTICE`, which remain the
+project legal files.
 
 See [`docs/release-legal.md`](docs/release-legal.md) for the release-legal workflow, generation/check commands,
 formatting rules, and current legal-audit status.

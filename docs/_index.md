@@ -4,7 +4,7 @@ description: Run `gradlew` / `gradlew.bat` without `gradle-wrapper.jar` in the s
 ---
 
 <!--
-Copyright 2026 The Apache Software Foundation
+Copyright 2026 The Buildish Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -80,13 +80,13 @@ These scripts are intentionally insecure:
 Run from the target project root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.sh | sh -s -- --yes-i-know-this-is-unsafe
+curl -fsSL https://raw.githubusercontent.com/buildish-tooling/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.sh | sh -s -- --yes-i-know-this-is-unsafe
 ```
 
 To target a different directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.sh | sh -s -- --yes-i-know-this-is-unsafe /path/to/project
+curl -fsSL https://raw.githubusercontent.com/buildish-tooling/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.sh | sh -s -- --yes-i-know-this-is-unsafe /path/to/project
 ```
 
 #### Windows / PowerShell
@@ -94,13 +94,13 @@ curl -fsSL https://raw.githubusercontent.com/apache/buildish/main/tools/buildish
 Run from the target project root:
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.ps1))) --yes-i-know-this-is-unsafe
+& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/buildish-tooling/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.ps1))) --yes-i-know-this-is-unsafe
 ```
 
 Or run it against a specific directory after downloading/cloning this repository locally:
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/apache/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.ps1))) --yes-i-know-this-is-unsafe C:\path\to\project
+& ([scriptblock]::Create((Invoke-RestMethod https://raw.githubusercontent.com/buildish-tooling/buildish/main/tools/buildish-no-gradle-wrapper-jar/unsafe-dev-install.ps1))) --yes-i-know-this-is-unsafe C:\path\to\project
 ```
 
 ### Security note
@@ -285,7 +285,7 @@ signature from the upstream Gradle endpoints.
 ## Customization boundaries
 
 The scripts intentionally assume the same Gradle hosts as the
-[Apache Buildish Mammoth Cache for Gradle](https://buildish.apache.org/components/mammoth-cache-gradle/):
+[Buildish Mammoth Cache for Gradle](https://buildish.org/components/mammoth-cache/):
 
 - `services.gradle.org` for checksum and detached signature metadata
 - `raw.githubusercontent.com/gradle/gradle/...` for the wrapper JAR bytes
