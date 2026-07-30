@@ -157,6 +157,9 @@ try {
   Write-BuildishWindowsTestLog "running batch launcher in '$projectDirectory' for Gradle '$TwoSegmentGradleVersion'"
   Set-BuildishWrapperDistributionUrl -ProjectDirectory $projectDirectory -GradleVersion $TwoSegmentGradleVersion
   Remove-Item -LiteralPath $wrapperJarPath, (Join-Path -Path $wrapperDirectory -ChildPath "gradle-wrapper-$TwoSegmentGradleVersion.sha256"), (Join-Path -Path $wrapperDirectory -ChildPath "gradle-wrapper-$TwoSegmentGradleVersion.asc") -Force -ErrorAction SilentlyContinue
+  # This fresh download runs the helper through gradlew.bat's Windows PowerShell
+  # 5.1 process. GPG creates a new temporary keybox and writes that successful
+  # initialization diagnostic to stderr, which must not abort signature checks.
   Invoke-BuildishWithGradleUserHome -ProjectDirectory $projectDirectory -Label 'cmd gradlew.bat help' -Command {
     Push-Location $projectDirectory
     try { & cmd.exe /d /c 'gradlew.bat --no-daemon help' } finally { Pop-Location }

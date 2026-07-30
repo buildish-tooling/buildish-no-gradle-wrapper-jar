@@ -147,9 +147,27 @@ function Invoke-Gpg {
   # both streams before control returns. Start-Process output-file redirection
   # can expose an empty file briefly even after the process reports completion.
   $commandArguments = @('--homedir', $GpgHome, '--batch', '--no-options', '--no-autostart') + $Arguments
-  $capturedOutput = @(& $GpgCommand @commandArguments 2>&1)
-  $exitCode = $LASTEXITCODE
+  $previousErrorActionPreference = $ErrorActionPreference
+  $capturedOutput = @()
+  $exitCode = $null
+  try {
+    # Windows PowerShell 5.1 represents native stderr as non-terminating error
+    # records. Capture those records without allowing benign GPG diagnostics to
+    # bypass the explicit native exit-code check below.
+    $ErrorActionPreference = 'Continue'
+    # Clear the automatic variable in the scope that native commands update.
+    # Assigning it unqualified here would create a function-local shadow whose
+    # value remains null even after a successful native invocation.
+    $global:LASTEXITCODE = $null
+    $capturedOutput = @(& $GpgCommand @commandArguments 2>&1)
+    $exitCode = $global:LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
   $output = ($capturedOutput | ForEach-Object { $_.ToString() }) -join [System.Environment]::NewLine
+  if ($null -eq $exitCode) {
+    throw "${FailurePrefix}: GPG did not report an exit code. $output"
+  }
   if ($exitCode -ne 0) {
     throw "${FailurePrefix}: ($exitCode) $output"
   }
