@@ -28,7 +28,7 @@ version N is triaged against the model shipped with N, not against later `main` 
 
 Implementation review baseline: `2748f332c2b1de75f8a42b18ee71fcb69e63ab2a`. *(maintainer)*
 
-Security-sensitive content digest: `f9d9dc74dd841bafa9c8b5ab9777cad9ca67316b`. The digest covers the paths declared in
+Security-sensitive content digest: `4715bb92c2885f12c2b7c9d5a0f2c19e390b57db`. The digest covers the paths declared in
 `scripts/security-model-inputs.txt` and is enforced by `make security-model-check`. *(documented)*
 
 Last maintainer review: 2026-07-31. *(maintainer)*
@@ -168,6 +168,9 @@ Operating system and runtime assumptions:
 - POSIX runtime helper requires `curl`, `gpg`, `mktemp`, and either `sha256sum` or `shasum`. *(documented)*
 - POSIX bootstrap requires `curl` or `wget`, `gpg`, and either `sha256sum` or `shasum`. *(documented)*
 - PowerShell helper requires PowerShell, `Invoke-WebRequest` / .NET HTTP support, `Get-FileHash`, and native Windows GnuPG for Windows batch verification. *(documented)*
+- The PowerShell helper resolves the conventional `gpg` application directly
+  on non-Windows hosts. On Windows it considers `gpg.exe` and `gpg` application
+  candidates while applying the Git-for-Windows rejection below. *(documented)*
 - The Windows helper intentionally rejects Git-for-Windows bundled GPG for `gradlew.bat` verification. *(documented)*
 - The host OS, shell, PowerShell runtime, GnuPG, checksum tools, network stack, filesystem, and JVM are trusted to behave according to their documented semantics. *(inferred)*
 

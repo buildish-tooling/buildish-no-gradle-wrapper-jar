@@ -151,6 +151,17 @@ function Test-BuildishNoGradleWrapperJarWindowsGitGpgPath {
 }
 
 function Get-BuildishNoGradleWrapperJarGpgCommandPath {
+  # The POSIX-hosted test/runtime path uses the conventional `gpg` executable.
+  # Avoid probing the Windows-only `gpg.exe` name there: a missing executable
+  # lookup is disproportionately expensive during PowerShell startup.
+  if (-not $BuildishIsWindows) {
+    $command = Get-Command gpg -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command -or [string]::IsNullOrWhiteSpace($command.Source)) {
+      return $null
+    }
+    return $command.Source
+  }
+
   $unsupportedGitGpgCommandPath = $null
 
   foreach ($name in @('gpg.exe', 'gpg')) {
