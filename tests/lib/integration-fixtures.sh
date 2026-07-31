@@ -274,6 +274,88 @@ PY
   fail "unable to start the stalling HTTP test server. log=$log_contents"
 }
 
+# Serve an oversized body without Content-Length so bootstrap tests prove that
+# streaming limits do not depend on response headers.
+start_unknown_length_http_server() {
+  stop_test_http_server
+  TEST_HTTP_SERVER_PORT_FILE=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-port.XXXXXX")
+  TEST_HTTP_SERVER_LOG=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-http-log.XXXXXX")
+
+  python3 - <<'PY' "$TEST_HTTP_SERVER_PORT_FILE" >"$TEST_HTTP_SERVER_LOG" 2>&1 &
+import http.server
+import socketserver
+import sys
+
+port_file = sys.argv[1]
+
+class ReusableTCPServer(socketserver.TCPServer):
+	allow_reuse_address = True
+
+class UnknownLengthHandler(http.server.BaseHTTPRequestHandler):
+	def do_GET(self):
+		self.send_response(200)
+		self.send_header("Content-Type", "application/octet-stream")
+		self.end_headers()
+		chunk = b"a" * 4096
+		try:
+			for _ in range(80):
+				self.wfile.write(chunk)
+				self.wfile.flush()
+		except (BrokenPipeError, ConnectionResetError):
+			pass
+
+	def log_message(self, format, *args):
+		return
+
+with ReusableTCPServer(("127.0.0.1", 0), UnknownLengthHandler) as httpd:
+	with open(port_file, "w", encoding="utf-8") as handle:
+		handle.write(str(httpd.server_address[1]))
+	httpd.serve_forever()
+PY
+  TEST_HTTP_SERVER_PID=$!
+
+  for _ in $(seq 1 100); do
+    if [ -s "$TEST_HTTP_SERVER_PORT_FILE" ]; then
+      TEST_HTTP_SERVER_PORT=$(cat "$TEST_HTTP_SERVER_PORT_FILE")
+      return 0
+    fi
+    if ! kill -0 "$TEST_HTTP_SERVER_PID" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.05
+  done
+
+  log_contents=$(cat "$TEST_HTTP_SERVER_LOG" 2>/dev/null || true)
+  stop_test_http_server
+  fail "unable to start the unknown-length HTTP test server. log=$log_contents"
+}
+
+# Re-render a prepared signed bootstrap fixture after swapping the backing test
+# server while retaining the fixture's original signed manifest pin.
+render_prepared_bootstrap_for_current_server() {
+  server_root=$1
+  bootstrap_kind=$2
+
+  case $bootstrap_kind in
+    posix)
+      bootstrap_template_path="$TOOL_DIR/bootstrap-install.sh"
+      bootstrap_output_path="$server_root/bootstrap-install.sh"
+      manifest_name='bootstrap-install-posix.sha256'
+      ;;
+    powershell)
+      bootstrap_template_path="$TOOL_DIR/bootstrap-install.ps1"
+      bootstrap_output_path="$server_root/bootstrap-install.ps1"
+      manifest_name='bootstrap-install-powershell.sha256'
+      ;;
+    *)
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  expected_manifest_sha256=$(hash_file "$server_root/$manifest_name")
+  render_bootstrap_release_script "$bootstrap_template_path" "$bootstrap_output_path" "$bootstrap_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT" "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" "$BOOTSTRAP_TEST_PUBLIC_KEY_PATH" "$expected_manifest_sha256"
+}
+
 # Assemble a release-like bootstrap payload tree, optionally damage the manifest
 # or signature, and expose it over localhost for end-to-end bootstrap tests.
 prepare_bootstrap_release_fixture() {

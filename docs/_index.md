@@ -196,7 +196,10 @@ The helpers retain the downloaded metadata beside the wrapper properties file as
 - `gradle/wrapper/gradle-wrapper-<version>.asc`
 
 They write downloaded files through temporary paths and then move them into place, so partially
-written files are not left behind if a download or verification step fails.
+written files are not left behind if a download or verification step fails. If retained metadata
+has a valid shape but fails its binding or cryptographic check, the helpers refresh the checksum
+and signature together once and re-run verification. A cached JAR that also disagrees with the
+project pin is rejected rather than used to authorize that refresh.
 
 The injected init script hooks the Gradle `Wrapper` task so that when Renovate or a developer runs
 `./gradlew wrapper`, the freshly generated `gradlew` / `gradlew.bat` files are patched again with
@@ -243,9 +246,14 @@ understand why they are stale, then retry.
 
 ### The helper fails with a timeout
 
-That usually means a stalled network path, proxy, or upstream endpoint. Recent PowerShell helper
-download paths fail explicitly instead of hanging forever. Fix the network path and retry instead of
-trying to bypass verification.
+That usually means a stalled network path, proxy, or upstream endpoint. Runtime helper downloads
+and release-rendered bootstrap downloads use a 60-second default deadline. Fix the network path and
+retry instead of trying to bypass verification.
+
+Set `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS` to a positive integer to change the
+runtime helper deadline. The release-rendered POSIX bootstrap uses
+`BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS` for the same purpose. Invalid or zero values fail
+before network access.
 
 ### The helper reports a missing or mismatched buildishWrapperJarSha256Sum
 
@@ -269,11 +277,14 @@ shape before patching it automatically.
 - `mktemp`
 - either `sha256sum` or `shasum`
 
+The release-rendered POSIX bootstrap additionally requires `dd` and `mkfifo`; it uses them to stop
+unknown-length responses at the documented byte limit. It supports either `curl` or `wget`.
+
 ### PowerShell helper
 
 - Windows PowerShell / PowerShell
 - native Windows `gpg.exe`
-- `Invoke-WebRequest`
+- `System.Net.Http`
 - `Get-FileHash`
 
 > [!IMPORTANT]

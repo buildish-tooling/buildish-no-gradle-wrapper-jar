@@ -296,6 +296,9 @@ Attacker goals:
 | Unsafe development installers refuse common CI markers | CI marker environment is present and not set to a false value | Unsafe current-branch code executes in CI despite marker | Hardening / misuse prevention | documented |
 | Windows helper rejects Git-for-Windows GPG for batch launcher verification | Running on Windows and only unsupported Git GPG is found | Verification uses unsupported MSYS-flavored GPG path behavior | Security-critical | documented |
 | PowerShell helper download operations fail within explicit timeout bounds | Timeout env var is valid; .NET waits honor deadline | Hung helper waits indefinitely | Availability / hardening | documented |
+| POSIX helper and release-rendered POSIX bootstrap downloads fail within explicit timeout bounds | Timeout env vars are positive integers; downloader and watchdog behavior operate correctly | Hung helper/bootstrap waits indefinitely | Availability / hardening | documented |
+| Bootstrap download streams stop at the documented byte limits even without Content-Length | Host streaming primitives and .NET streams operate correctly | Unknown-length response consumes unbounded temporary storage | Availability / hardening | documented |
+| Valid-looking corrupt runtime sidecars receive at most one paired refresh before full re-verification | Cached JAR is absent or already matches the project pin; upstream remains reachable | Repeated downloads persist indefinitely or a replayed JAR authorizes metadata replacement | Recovery / hardening | documented |
 | Runtime helper prepends init-script arguments only when project-local init script exists | Launcher helper runs before Gradle | Missing/incorrect init injection prevents wrapper repatching | Correctness / hardening | documented |
 | Init script re-patches generated launchers after `Wrapper` task | Gradle launcher shape matches supported anchors | Wrapper regeneration silently removes helper invocation | Security-critical for sustained protection | documented |
 | Init script preserves but never recalculates `buildishWrapperJarSha256Sum` | Wrapper task starts from one valid reviewed pin | Gradle silently removes the pin or a network-derived replacement becomes trusted project configuration | Security-critical for sustained protection | documented |
@@ -310,8 +313,8 @@ Resource thresholds:
 - Runtime wrapper JAR: files larger than 10 MiB fail validation. *(documented)*
 - Bootstrap metadata/signature: files larger than 65,536 bytes fail validation. *(documented)*
 - Bootstrap payloads: files larger than 262,144 bytes fail validation. *(documented)*
-- PowerShell helper download timeout: default 60 seconds, configurable only to a positive integer. *(documented)*
-- POSIX helper and POSIX bootstrap do not currently claim a quantitative network timeout property. *(inferred)*
+- Runtime helper download timeout: default 60 seconds, configurable only to a positive integer through `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS`. *(documented)*
+- Release-rendered POSIX bootstrap download timeout: default 60 seconds, configurable only to a positive integer through `BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS`. *(documented)*
 
 ## 9 Security Properties The Project Does Not Provide
 
@@ -384,7 +387,7 @@ Well-known attack classes left to callers/operators:
 - "Helper downloads from the network" is not a finding unless downloaded bytes are accepted without the claimed checksum/signature validation. *(documented)*
 - "The helper does not verify the Gradle distribution ZIP" is `BY-DESIGN: property-disclaimed`; the init script warns and downstream projects must configure `distributionSha256Sum`. *(documented)*
 - "GPG uses the user's keyring" is not a finding for runtime helper verification because it creates an isolated temporary GPG home and disables auto key retrieval. *(documented)*
-- "PowerShell helper may hang forever on network operations" should cite the explicit timeout logic unless the report identifies a path not governed by the deadline. *(documented)*
+- "Runtime helper or release-rendered bootstrap may hang forever on network operations" should cite the explicit timeout logic unless the report identifies a path not governed by the deadline. *(documented)*
 - "Unsupported future Gradle launcher shapes fail installation or wrapper updates" is expected fail-closed behavior, not silent bypass. *(documented)*
 
 ## 12 Conditions That Would Change This Model
@@ -426,7 +429,7 @@ Wave 1: ratification blockers
 - Is compromise of the release-signing key fully out of scope? Proposed answer:
   yes; release-key operations are a project release-management responsibility
   outside this helper's enforceable layer. Lands in §3, §7, and §9. *(inferred)*
-- Is absence of POSIX network timeout an accepted non-property, or should POSIX helper/bootstrap claim timeout-bounded downloads? Proposed answer: currently no POSIX timeout property is claimed. Lands in §6, §8, and §9. *(inferred)*
+- Should POSIX helper/bootstrap claim timeout-bounded downloads? Implemented answer: yes; both use a 60-second default and accept only positive-integer overrides. Lands in §6 and §8. *(documented)*
 
 Wave 2: environment and resource assumptions
 

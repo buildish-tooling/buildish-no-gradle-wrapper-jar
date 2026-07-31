@@ -112,6 +112,58 @@ function Assert-MaxFileSize {
   }
 }
 
+function Import-HttpClientTypes {
+  if ($null -ne ('System.Net.Http.HttpClient' -as [type])) {
+    return
+  }
+
+  Add-Type -AssemblyName 'System.Net.Http'
+}
+
+function Get-RemainingTimeout {
+  param(
+    [datetime]$Deadline,
+    [string]$Operation
+  )
+
+  $remaining = $Deadline - [datetime]::UtcNow
+  if ($remaining -le [System.TimeSpan]::Zero) {
+    throw "$Operation timed out after $HttpTimeoutSeconds seconds."
+  }
+  return $remaining
+}
+
+function Wait-Task {
+  param(
+    [System.Threading.Tasks.Task]$Task,
+    [datetime]$Deadline,
+    [string]$Operation
+  )
+
+  $remaining = Get-RemainingTimeout -Deadline $Deadline -Operation $Operation
+  if (-not $Task.Wait($remaining)) {
+    throw "$Operation timed out after $HttpTimeoutSeconds seconds."
+  }
+  return $Task.GetAwaiter().GetResult()
+}
+
+function Write-BoundedDownloadChunk {
+  param(
+    [System.IO.Stream]$FileStream,
+    [byte[]]$Buffer,
+    [int]$BytesRead,
+    [long]$MaxBytes,
+    [string]$Label,
+    [ref]$TotalBytes
+  )
+
+  $TotalBytes.Value += $BytesRead
+  if ($TotalBytes.Value -gt $MaxBytes) {
+    throw "$Label exceeded the maximum allowed size of $MaxBytes bytes."
+  }
+  $FileStream.Write($Buffer, 0, $BytesRead)
+}
+
 function Download {
   param(
     [string]$Path,
@@ -121,11 +173,59 @@ function Download {
   )
 
   $tempPath = Join-Path -Path (Split-Path -Parent $Path) -ChildPath ".buildish-bootstrap-install.$([System.IO.Path]::GetRandomFileName())"
+  $handler = $null
+  $client = $null
+  $request = $null
+  $response = $null
+  $responseStream = $null
+  $fileStream = $null
+  $operation = "Downloading $Label from '$Uri'"
+  $deadline = [datetime]::UtcNow.AddSeconds($HttpTimeoutSeconds)
   try {
-    Invoke-WebRequest -Uri $Uri -OutFile $tempPath -TimeoutSec $HttpTimeoutSeconds
-    Assert-MaxFileSize -Path $tempPath -MaxBytes $MaxBytes -Label $Label
+    Import-HttpClientTypes
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [System.TimeSpan]::FromSeconds($HttpTimeoutSeconds)
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $Uri)
+    $response = Wait-Task -Task ($client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)) -Deadline $deadline -Operation $operation
+    [void]($response.EnsureSuccessStatusCode())
+
+    $contentLength = $response.Content.Headers.ContentLength
+    if ($null -ne $contentLength -and $contentLength -gt $MaxBytes) {
+      throw "$Label exceeded the maximum allowed size of $MaxBytes bytes."
+    }
+
+    $responseStream = Wait-Task -Task ($response.Content.ReadAsStreamAsync()) -Deadline $deadline -Operation $operation
+    $fileStream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $buffer = New-Object byte[] 81920
+    [long]$totalBytes = 0
+    while (($bytesRead = Wait-Task -Task ($responseStream.ReadAsync($buffer, 0, $buffer.Length)) -Deadline $deadline -Operation $operation) -gt 0) {
+      Write-BoundedDownloadChunk -FileStream $fileStream -Buffer $buffer -BytesRead $bytesRead -MaxBytes $MaxBytes -Label $Label -TotalBytes ([ref]$totalBytes)
+    }
+    $fileStream.Dispose()
+    $fileStream = $null
+    $responseStream.Dispose()
+    $responseStream = $null
     Move-Item -LiteralPath $tempPath -Destination $Path -Force
   } finally {
+    if ($null -ne $fileStream) {
+      $fileStream.Dispose()
+    }
+    if ($null -ne $responseStream) {
+      $responseStream.Dispose()
+    }
+    if ($null -ne $response) {
+      $response.Dispose()
+    }
+    if ($null -ne $request) {
+      $request.Dispose()
+    }
+    if ($null -ne $client) {
+      $client.Dispose()
+    }
+    if ($null -ne $handler) {
+      $handler.Dispose()
+    }
     Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
   }
 }

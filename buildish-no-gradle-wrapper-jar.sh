@@ -136,11 +136,21 @@ buildish_no_gradle_wrapper_jar_download_to_temp_path() {
   resource_label=$3
   max_size_bytes=$4
   curl_stderr_path="${temp_path}.stderr"
+  curl_status=0
 
-  if ! curl --fail --location --silent --show-error --max-filesize "$max_size_bytes" --output "$temp_path" "$download_url" 2>"$curl_stderr_path"; then
+  curl --fail --location --silent --show-error \
+    --connect-timeout "$BUILDISH_HELPER_HTTP_TIMEOUT_SECONDS" \
+    --max-time "$BUILDISH_HELPER_HTTP_TIMEOUT_SECONDS" \
+    --max-filesize "$max_size_bytes" \
+    --output "$temp_path" "$download_url" 2>"$curl_stderr_path" || curl_status=$?
+  if [ "$curl_status" -ne 0 ]; then
     curl_output=$(cat "$curl_stderr_path" 2>/dev/null || true)
     rm -f "$temp_path" "$curl_stderr_path"
-    if printf '%s' "$curl_output" | grep -Fq 'Maximum file size exceeded'; then
+    if [ "$curl_status" -eq 28 ]; then
+      [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
+      buildish_no_gradle_wrapper_jar_fail "Downloading ${resource_label} from '${download_url}' timed out after ${BUILDISH_HELPER_HTTP_TIMEOUT_SECONDS} seconds."
+    fi
+    if [ "$curl_status" -eq 63 ] || printf '%s' "$curl_output" | grep -Fq 'Maximum file size exceeded'; then
       [ -n "$curl_output" ] && printf '%s\n' "$curl_output" >&2
       buildish_no_gradle_wrapper_jar_fail "${resource_label} exceeded the maximum allowed size of ${max_size_bytes} bytes."
     fi
@@ -238,6 +248,39 @@ buildish_no_gradle_wrapper_jar_ensure_metadata_files() {
     "$BUILDISH_HELPER_MAX_METADATA_BYTES" \
     buildish_no_gradle_wrapper_jar_validate_signature_file \
     'Downloaded wrapper detached signature was not valid ASCII-armored OpenPGP data.'
+}
+
+# Replace both sidecars as one bounded recovery attempt. A checksum and detached
+# signature describe the same upstream artifact, so refreshing only one can keep
+# a valid-looking but inconsistent pair pinned in the project cache.
+buildish_no_gradle_wrapper_jar_refresh_metadata_files() {
+  rm -f "$BUILDISH_HELPER_SHA256_PATH" "$BUILDISH_HELPER_SIGNATURE_PATH"
+  buildish_no_gradle_wrapper_jar_ensure_metadata_files
+  BUILDISH_HELPER_METADATA_REFRESHED=1
+}
+
+# Re-read the upstream checksum and require it to agree with the reviewed
+# project-owned pin after either initial cache validation or a metadata refresh.
+buildish_no_gradle_wrapper_jar_assert_metadata_binding() {
+  upstream_wrapper_checksum=$(tr -d '\r\n' < "$BUILDISH_HELPER_SHA256_PATH" | tr '[:upper:]' '[:lower:]')
+  [ "$upstream_wrapper_checksum" = "$BUILDISH_HELPER_PROJECT_SHA256" ] || return 1
+  expected_wrapper_checksum=$BUILDISH_HELPER_PROJECT_SHA256
+}
+
+buildish_no_gradle_wrapper_jar_verify_signature_with_metadata_refresh() {
+  signature_path=$1
+  payload_path=$2
+
+  if buildish_no_gradle_wrapper_jar_verify_signature "$signature_path" "$payload_path"; then
+    return 0
+  fi
+  [ "$BUILDISH_HELPER_METADATA_REFRESHED" -eq 0 ] || return 1
+
+  echo 'buildish-no-gradle-wrapper-jar: warning: Detached signature verification failed; refreshing wrapper metadata once.' >&2
+  buildish_no_gradle_wrapper_jar_refresh_metadata_files
+  buildish_no_gradle_wrapper_jar_assert_metadata_binding ||
+    buildish_no_gradle_wrapper_jar_fail "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '${BUILDISH_HELPER_DIST_VERSION}'. Review distributionUrl and the committed pin together."
+  buildish_no_gradle_wrapper_jar_verify_signature "$BUILDISH_HELPER_SIGNATURE_PATH" "$payload_path"
 }
 
 # Verify a wrapper JAR against the pinned Gradle signing key in an isolated,
@@ -363,6 +406,15 @@ BUILDISH_HELPER_JAR_PATH="${BUILDISH_HELPER_WRAPPER_DIR}/gradle-wrapper.jar"
 BUILDISH_HELPER_INIT_SCRIPT_PATH="${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
 BUILDISH_HELPER_MAX_METADATA_BYTES=65536
 BUILDISH_HELPER_MAX_JAR_BYTES=10485760
+BUILDISH_HELPER_HTTP_TIMEOUT_SECONDS=${BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS:-60}
+
+case $BUILDISH_HELPER_HTTP_TIMEOUT_SECONDS in
+  ''|*[!0-9]*) buildish_no_gradle_wrapper_jar_fail 'BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS must be a positive integer.' ;;
+esac
+case $BUILDISH_HELPER_HTTP_TIMEOUT_SECONDS in
+  *[1-9]*) ;;
+  *) buildish_no_gradle_wrapper_jar_fail 'BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS must be a positive integer.' ;;
+esac
 
 buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_WRAPPER_DIR" 'Gradle wrapper directory'
 
@@ -440,11 +492,21 @@ BUILDISH_HELPER_JAR_URL="https://raw.githubusercontent.com/gradle/gradle/v${BUIL
 
 # The metadata files are cached in the project so later runs can verify an
 # existing wrapper JAR without immediately redownloading side files.
+BUILDISH_HELPER_METADATA_REFRESHED=0
 buildish_no_gradle_wrapper_jar_ensure_metadata_files
-upstream_wrapper_checksum=$(tr -d '\r\n' < "$BUILDISH_HELPER_SHA256_PATH" | tr '[:upper:]' '[:lower:]')
-[ "$upstream_wrapper_checksum" = "$BUILDISH_HELPER_PROJECT_SHA256" ] ||
-  buildish_no_gradle_wrapper_jar_fail "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '${BUILDISH_HELPER_DIST_VERSION}'. Review distributionUrl and the committed pin together."
-expected_wrapper_checksum=$BUILDISH_HELPER_PROJECT_SHA256
+if ! buildish_no_gradle_wrapper_jar_assert_metadata_binding; then
+  buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_JAR_PATH" 'gradle-wrapper.jar'
+  if [ -f "$BUILDISH_HELPER_JAR_PATH" ]; then
+    buildish_no_gradle_wrapper_jar_file_within_max_size "$BUILDISH_HELPER_JAR_PATH" "$BUILDISH_HELPER_MAX_JAR_BYTES" ||
+      buildish_no_gradle_wrapper_jar_fail "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '${BUILDISH_HELPER_DIST_VERSION}'. Review distributionUrl and the committed pin together."
+    cached_wrapper_checksum=$(buildish_no_gradle_wrapper_jar_sha256_file "$BUILDISH_HELPER_JAR_PATH")
+    [ "$cached_wrapper_checksum" = "$BUILDISH_HELPER_PROJECT_SHA256" ] ||
+      buildish_no_gradle_wrapper_jar_fail "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '${BUILDISH_HELPER_DIST_VERSION}'. Review distributionUrl and the committed pin together."
+  fi
+  buildish_no_gradle_wrapper_jar_refresh_metadata_files
+  buildish_no_gradle_wrapper_jar_assert_metadata_binding ||
+    buildish_no_gradle_wrapper_jar_fail "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '${BUILDISH_HELPER_DIST_VERSION}'. Review distributionUrl and the committed pin together."
+fi
 
 buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_JAR_PATH" 'gradle-wrapper.jar'
 
@@ -454,7 +516,7 @@ if [ -f "$BUILDISH_HELPER_JAR_PATH" ]; then
   if buildish_no_gradle_wrapper_jar_file_within_max_size "$BUILDISH_HELPER_JAR_PATH" "$BUILDISH_HELPER_MAX_JAR_BYTES"; then
     existing_wrapper_checksum=$(buildish_no_gradle_wrapper_jar_sha256_file "$BUILDISH_HELPER_JAR_PATH")
     if [ "$existing_wrapper_checksum" = "$expected_wrapper_checksum" ] &&
-       buildish_no_gradle_wrapper_jar_verify_signature "$BUILDISH_HELPER_SIGNATURE_PATH" "$BUILDISH_HELPER_JAR_PATH"; then
+       buildish_no_gradle_wrapper_jar_verify_signature_with_metadata_refresh "$BUILDISH_HELPER_SIGNATURE_PATH" "$BUILDISH_HELPER_JAR_PATH"; then
       return 0 2>/dev/null || exit 0
     fi
   fi
@@ -481,7 +543,7 @@ downloaded_wrapper_checksum=$(buildish_no_gradle_wrapper_jar_sha256_file "$downl
   buildish_no_gradle_wrapper_jar_fail "Downloaded Gradle wrapper JAR checksum did not match the expected SHA-256."
 }
 
-buildish_no_gradle_wrapper_jar_verify_signature "$BUILDISH_HELPER_SIGNATURE_PATH" "$downloaded_wrapper_path" || {
+buildish_no_gradle_wrapper_jar_verify_signature_with_metadata_refresh "$BUILDISH_HELPER_SIGNATURE_PATH" "$downloaded_wrapper_path" || {
   rm -f "$downloaded_wrapper_path"
   buildish_no_gradle_wrapper_jar_fail "Downloaded Gradle wrapper JAR failed detached signature verification."
 }

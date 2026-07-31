@@ -155,6 +155,72 @@ exercise_powershell_helper_download_timeout_failure() {
   [ ! -e "$sha_path" ] || fail "PowerShell helper should not publish a timed-out checksum download into '$sha_path'."
 }
 
+# Exercise the equivalent POSIX curl connect/overall deadline against the same
+# stalling server used for PowerShell.
+exercise_posix_helper_download_timeout_failure() {
+  project_dir=$1
+  version=$2
+  sha_path="$project_dir/gradle/wrapper/gradle-wrapper-$version.sha256"
+
+  log "exercising POSIX helper download-timeout failure in '$project_dir' for Gradle '$version'"
+  rm -f "$sha_path"
+
+  start_stalling_http_server
+  configure_helper_download_urls "$project_dir" posix "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+
+  run_posix_helper_direct_with_timeout "$project_dir" "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS"
+  stop_test_http_server
+
+  assert_last_command_failed 'POSIX helper unexpectedly succeeded even though the download endpoint stalled.'
+  assert_last_output_mentions_timeout "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS" 'POSIX helper timeout failure output did not mention the configured timeout.'
+  [ ! -e "$sha_path" ] || fail "POSIX helper should not publish a timed-out checksum download into '$sha_path'."
+}
+
+# Structurally valid but incorrect sidecars used to persist forever. Serve the
+# original pair, corrupt one cached file without breaking its shallow validator,
+# and require exactly one paired refresh followed by successful verification.
+exercise_helper_valid_shape_metadata_refresh() {
+  project_dir=$1
+  version=$2
+  helper_kind=$3
+  metadata_kind=$4
+  wrapper_dir="$project_dir/gradle/wrapper"
+  sha_path="$wrapper_dir/gradle-wrapper-$version.sha256"
+  asc_path="$wrapper_dir/gradle-wrapper-$version.asc"
+  server_root="$project_dir.metadata-refresh-server"
+
+  mkdir -p "$server_root"
+  cp "$sha_path" "$server_root/wrapper.sha256"
+  cp "$asc_path" "$server_root/wrapper.asc"
+  cp "$wrapper_dir/gradle-wrapper.jar" "$server_root/gradle-wrapper.jar"
+
+  case $metadata_kind in
+    sha256)
+      log "exercising $helper_kind helper valid-shape wrong-checksum refresh in '$project_dir'"
+      printf '%064d\n' 0 > "$sha_path"
+      ;;
+    asc)
+      log "exercising $helper_kind helper cryptographically invalid armored-signature refresh in '$project_dir'"
+      printf '%s\n' '-----BEGIN PGP SIGNATURE-----' '' 'invalid-signature-body' '-----END PGP SIGNATURE-----' > "$asc_path"
+      ;;
+    *)
+      fail "unknown metadata refresh kind '$metadata_kind'"
+      ;;
+  esac
+
+  start_static_http_server "$server_root"
+  configure_helper_download_urls "$project_dir" "$helper_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  sha_request_count=$(grep -Fc 'GET /wrapper.sha256 ' "$TEST_HTTP_SERVER_LOG" || true)
+  asc_request_count=$(grep -Fc 'GET /wrapper.asc ' "$TEST_HTTP_SERVER_LOG" || true)
+  stop_test_http_server
+
+  assert_last_command_succeeded "$helper_kind helper did not recover from valid-shape corrupt $metadata_kind metadata."
+  [ "$sha_request_count" -eq 1 ] && [ "$asc_request_count" -eq 1 ] ||
+    fail "$helper_kind helper metadata recovery was not one bounded paired refresh (sha256 requests=$sha_request_count, signature requests=$asc_request_count)."
+  assert_metadata_for_version "$project_dir" "$version"
+}
+
 # Exercise helper rejection of symlinked integrity artifacts so the runtime path
 # cannot be redirected outside the project tree through filesystem indirection.
 exercise_helper_symlink_rejection() {
@@ -379,10 +445,7 @@ exercise_helper_two_segment_version_support() {
 
   if [ "$helper_kind" = powershell ]; then
     init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
-    case $init_script_path in
-      *[[:space:]]*) expected_output="--init-script \"$init_script_path\"" ;;
-      *) expected_output="--init-script $init_script_path" ;;
-    esac
+    expected_output="--init-script \"$init_script_path\""
     assert_last_output_equals "$expected_output" 'PowerShell helper emitted diagnostics or HTTP response objects while downloading and verifying a two-segment Gradle wrapper.'
   fi
 }
@@ -414,8 +477,8 @@ exercise_posix_helper_init_script_deduplication() {
   assert_last_output_exact_line_count "-I$init_script_path" 1 'POSIX helper duplicated the compact -I<path> argument.'
 }
 
-# Exercise PowerShell helper init-script injection and deduplication so the
-# batch launcher contract keeps quoting paths with spaces correctly.
+# Exercise PowerShell helper init-script injection and deduplication so every
+# path stays quoted while crossing cmd.exe, including paths with metacharacters.
 exercise_powershell_helper_init_script_output() {
   project_dir=$1
   init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
@@ -430,6 +493,43 @@ exercise_powershell_helper_init_script_output() {
   run_powershell_helper_direct "$project_dir" "--stacktrace --init-script \"$init_script_path\""
   assert_last_command_succeeded 'PowerShell helper failed while checking init-script deduplication.'
   assert_last_output_equals '' 'PowerShell helper should not emit a duplicate init-script argument when the caller already supplied it.'
+}
+
+# A recovery warning must remain on stderr even when the optional init script is
+# absent and the helper's only stdout protocol value is an empty line. Otherwise
+# gradlew.bat's `for /f` loop mistakes the warning for Java arguments.
+exercise_powershell_helper_recovery_stream_protocol() {
+  project_dir=$1
+  version=$2
+  jar_path="$project_dir/gradle/wrapper/gradle-wrapper.jar"
+  init_script_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts"
+
+  log "exercising PowerShell helper recovery stream protocol in '$project_dir'"
+  write_file_with_size "$jar_path" $((HELPER_MAX_JAR_BYTES + 1)) ''
+  rm -f "$init_script_path"
+
+  run_powershell_helper_direct_capture_streams "$project_dir"
+  [ "$CAPTURED_STATUS" -eq 0 ] || fail "PowerShell helper did not recover with a missing optional init script (exit status=$CAPTURED_STATUS, stderr=$CAPTURED_STDERR)."
+  [ "$CAPTURED_STDOUT" = '' ] || fail "PowerShell helper recovery polluted its empty stdout protocol value (stdout=$CAPTURED_STDOUT)."
+  [ "$CAPTURED_STDOUT_BYTE_COUNT" -eq 1 ] && [ "$CAPTURED_STDOUT_LINE_COUNT" -eq 1 ] ||
+    fail "PowerShell helper recovery should emit exactly one empty stdout protocol line (bytes=$CAPTURED_STDOUT_BYTE_COUNT, lines=$CAPTURED_STDOUT_LINE_COUNT)."
+  assert_last_stderr_contains 'warning: Existing Gradle wrapper JAR verification failed; the helper will re-download it.' 'PowerShell helper recovery warning was not emitted on stderr.'
+  assert_metadata_for_version "$project_dir" "$version"
+}
+
+# Fatal diagnostics also belong exclusively to stderr; stdout must not expose a
+# string that gradlew.bat could reinterpret as launcher arguments.
+exercise_powershell_helper_failure_stream_protocol() {
+  project_dir=$1
+
+  log "exercising PowerShell helper failure stream protocol in '$project_dir'"
+  rm -f "$project_dir/gradle/wrapper/gradle-wrapper.properties"
+
+  run_powershell_helper_direct_capture_streams "$project_dir"
+  [ "$CAPTURED_STATUS" -ne 0 ] || fail 'PowerShell helper unexpectedly succeeded without gradle-wrapper.properties.'
+  [ "$CAPTURED_STDOUT_BYTE_COUNT" -eq 0 ] ||
+    fail "PowerShell helper fatal failure wrote to the stdout protocol (bytes=$CAPTURED_STDOUT_BYTE_COUNT, stdout=$CAPTURED_STDOUT)."
+  assert_last_stderr_contains 'Gradle wrapper properties file was not found' 'PowerShell helper fatal diagnostic was not emitted on stderr.'
 }
 
 # Run the helper edge-case matrix for both shells on isolated fixture copies so
@@ -479,6 +579,9 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-symlinked-init-script"
   exercise_helper_symlink_rejection "$scenario_root/posix-symlinked-init-script" "$posix_version" posix init-script
 
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-download-timeout"
+  exercise_posix_helper_download_timeout_failure "$scenario_root/posix-download-timeout" "$posix_version"
+
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-properties"
   exercise_helper_missing_properties_failure "$scenario_root/posix-missing-properties" posix
 
@@ -499,11 +602,19 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-two-segment-version"
   exercise_helper_two_segment_version_support "$scenario_root/posix-two-segment-version" posix "$TWO_SEGMENT_GRADLE_VERSION"
 
+  for metadata_kind in sha256 asc; do
+    copy_project_fixture "$posix_base_project" "$scenario_root/posix-metadata-refresh-$metadata_kind"
+    exercise_helper_valid_shape_metadata_refresh "$scenario_root/posix-metadata-refresh-$metadata_kind" "$posix_version" posix "$metadata_kind"
+  done
+
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-init-script-dedup"
   exercise_posix_helper_init_script_deduplication "$scenario_root/posix-init-script-dedup"
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-corrupted-jar-cached-metadata"
   exercise_helper_recovery_with_cached_metadata "$scenario_root/powershell-corrupted-jar-cached-metadata" "$powershell_version" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-recovery-stream-protocol"
+  exercise_powershell_helper_recovery_stream_protocol "$scenario_root/powershell-recovery-stream-protocol" "$powershell_version"
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-corrupted-jar-missing-metadata"
   exercise_helper_recovery_scenario "$scenario_root/powershell-corrupted-jar-missing-metadata" "$powershell_version" powershell
@@ -536,7 +647,7 @@ run_helper_edge_case_suite() {
   exercise_powershell_helper_download_timeout_failure "$scenario_root/powershell-download-timeout" "$powershell_version"
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-properties"
-  exercise_helper_missing_properties_failure "$scenario_root/powershell-missing-properties" powershell
+  exercise_powershell_helper_failure_stream_protocol "$scenario_root/powershell-missing-properties"
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-distribution-url"
   exercise_helper_missing_distribution_url_failure "$scenario_root/powershell-missing-distribution-url" powershell
@@ -555,6 +666,14 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-two-segment-version"
   exercise_helper_two_segment_version_support "$scenario_root/powershell-two-segment-version" powershell "$TWO_SEGMENT_GRADLE_VERSION"
 
+  for metadata_kind in sha256 asc; do
+    copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-metadata-refresh-$metadata_kind"
+    exercise_helper_valid_shape_metadata_refresh "$scenario_root/powershell-metadata-refresh-$metadata_kind" "$powershell_version" powershell "$metadata_kind"
+  done
+
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell helper with spaces"
   exercise_powershell_helper_init_script_output "$scenario_root/powershell helper with spaces"
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell&helper^(meta)%pct!bang"
+  exercise_powershell_helper_init_script_output "$scenario_root/powershell&helper^(meta)%pct!bang"
 }

@@ -165,6 +165,61 @@ exercise_bootstrap_malformed_manifest_pin_failure() {
   assert_helper_files_absent "$project_dir"
 }
 
+# A stalled endpoint must not hold the POSIX bootstrap indefinitely. Re-render
+# an otherwise valid fixture against the stalling server and shorten the same
+# deadline setting exposed to users.
+exercise_posix_bootstrap_timeout_failure() {
+  project_dir=$1
+  server_root="$project_dir-bootstrap-release"
+
+  log "exercising POSIX bootstrap timeout failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  prepare_bootstrap_release_fixture "$server_root" posix complete valid
+  stop_test_http_server
+  start_stalling_http_server
+  render_prepared_bootstrap_for_current_server "$server_root" posix
+
+  run_posix_bootstrap_installer_capture_with_timeout "$server_root/bootstrap-install.sh" "$project_dir" "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS"
+  stop_test_http_server
+
+  assert_last_command_failed 'POSIX bootstrap installer unexpectedly succeeded against a stalled endpoint.'
+  assert_last_output_mentions_timeout "$POWERSHELL_HTTP_TIMEOUT_SECONDS_FOR_TESTS" 'POSIX bootstrap timeout failure did not mention the configured deadline.'
+  assert_helper_files_absent "$project_dir"
+}
+
+# Both bootstrap implementations must stop consuming an unknown-length body at
+# the payload limit rather than relying on Content-Length or a later disk check.
+exercise_bootstrap_unknown_length_oversized_failure() {
+  project_dir=$1
+  bootstrap_kind=$2
+  server_root="$project_dir-bootstrap-release"
+
+  log "exercising $bootstrap_kind bootstrap unknown-length oversized response failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  prepare_bootstrap_release_fixture "$server_root" "$bootstrap_kind" complete valid
+  stop_test_http_server
+  start_unknown_length_http_server
+  render_prepared_bootstrap_for_current_server "$server_root" "$bootstrap_kind"
+
+  case $bootstrap_kind in
+    posix)
+      run_posix_bootstrap_installer_capture "$server_root/bootstrap-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_powershell_bootstrap_installer_capture "$server_root/bootstrap-install.ps1" "$project_dir"
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+  stop_test_http_server
+
+  assert_last_command_failed "$bootstrap_kind bootstrap installer unexpectedly consumed an oversized unknown-length body."
+  assert_last_output_contains 'exceeded the maximum allowed size' "$bootstrap_kind bootstrap oversized response failure did not mention the payload limit."
+  assert_helper_files_absent "$project_dir"
+}
+
 # Exercise the release-style bootstrap happy path from signed localhost payloads
 # through helper installation and launcher patch verification.
 exercise_bootstrap_success() {
@@ -215,6 +270,9 @@ run_bootstrap_suite() {
   exercise_bootstrap_cross_release_replay_failure "$test_root/bootstrap-cross-release-replay-powershell" powershell
   exercise_bootstrap_malformed_manifest_pin_failure "$test_root/bootstrap-malformed-manifest-pin-posix" posix
   exercise_bootstrap_malformed_manifest_pin_failure "$test_root/bootstrap-malformed-manifest-pin-powershell" powershell
+  exercise_posix_bootstrap_timeout_failure "$test_root/bootstrap-timeout-posix"
+  exercise_bootstrap_unknown_length_oversized_failure "$test_root/bootstrap-unknown-length-posix" posix
+  exercise_bootstrap_unknown_length_oversized_failure "$test_root/bootstrap-unknown-length-powershell" powershell
   exercise_bootstrap_success "$test_root/bootstrap-success-posix" posix
   exercise_bootstrap_success "$test_root/bootstrap-success-powershell" powershell
 }

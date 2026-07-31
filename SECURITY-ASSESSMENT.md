@@ -47,6 +47,9 @@ pass:
    temporary GPG home.
 9. Downloaded metadata and JAR files are written via temporary paths and only moved into place on
    success.
+10. Valid-looking corrupt checksum/signature sidecars receive one paired refresh and full
+    re-verification, but a cached JAR that also disagrees with the project pin remains a hard
+    failure.
 
 That means poisoned cache content or a corrupted download should fail closed instead of being
 accepted silently.
@@ -142,8 +145,7 @@ insecure, require an explicit acknowledgement flag, and refuse CI environments.
   entrypoints.
 - On Windows, use a native Windows GnuPG build for `gradlew.bat` verification. The helper
   intentionally rejects the Git-for-Windows bundled `gpg.exe`.
-- Expect helper timeout failures to be explicit; a hung PowerShell helper download should fail with
-  a timeout error instead of waiting forever.
+- Expect helper and release-bootstrap timeout failures to be explicit instead of waiting forever.
 
 ## Positive security properties
 
@@ -153,7 +155,10 @@ insecure, require an explicit acknowledgement flag, and refuse CI environments.
 - GPG verification runs in a fresh temporary home and disables auto key retrieval.
 - Corrupt cached JARs are deleted before redownload.
 - Metadata and JAR downloads use temp files and move into place only after success.
-- PowerShell download paths fail within explicit time bounds instead of waiting indefinitely.
+- Runtime helper and release-bootstrap downloads fail within explicit time bounds instead of
+  waiting indefinitely.
+- Bootstrap downloads enforce byte limits while streaming, including when a response omits
+  `Content-Length`.
 - Installers reject symlinks / reparse points instead of following them.
 - `install.sh` and `install.ps1` no longer download helper payloads from the network.
 - `bootstrap-install.*` verifies a detached signature over a per-platform payload manifest in an

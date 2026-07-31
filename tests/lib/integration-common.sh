@@ -607,6 +607,16 @@ run_posix_bootstrap_installer_capture() {
   run_and_capture sh "$bootstrap_script_path" "$project_dir"
 }
 
+# Run a rendered POSIX bootstrap with a short deadline for deterministic stalled
+# response coverage.
+run_posix_bootstrap_installer_capture_with_timeout() {
+  bootstrap_script_path=$1
+  project_dir=$2
+  timeout_seconds=$3
+  log "running POSIX bootstrap installer '$bootstrap_script_path' into '$project_dir' with timeout ${timeout_seconds}s"
+  run_and_capture env BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS="$timeout_seconds" sh "$bootstrap_script_path" "$project_dir"
+}
+
 # Run a PowerShell bootstrap script against a fixture while capturing output in
 # the normalized form needed for portable stderr assertions.
 run_powershell_bootstrap_installer_capture() {
@@ -623,6 +633,16 @@ run_posix_helper_direct() {
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
   log "running POSIX helper directly in '$project_dir'"
   run_and_capture env APP_HOME="$project_dir" sh -c 'helper_path=$1; set --; . "$helper_path"' sh "$helper_path"
+}
+
+# Run the POSIX helper with a short production-equivalent network deadline so
+# stalled-response behavior can be tested without waiting for the default.
+run_posix_helper_direct_with_timeout() {
+  project_dir=$1
+  timeout_seconds=$2
+  helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
+  log "running POSIX helper directly in '$project_dir' with timeout ${timeout_seconds}s"
+  run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS="$timeout_seconds" sh -c 'helper_path=$1; set --; . "$helper_path"' sh "$helper_path"
 }
 
 # Source the POSIX helper and echo the resulting argv so init-script injection
@@ -643,6 +663,39 @@ run_powershell_helper_direct() {
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1"
   log "running PowerShell helper directly in '$project_dir'"
   run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" pwsh -NoLogo -NoProfile -File "$helper_path"
+}
+
+# Run the PowerShell helper while retaining its stdout protocol and stderr
+# diagnostics separately. Byte and line counts preserve an otherwise invisible
+# empty protocol line after command substitution trims trailing newlines.
+run_powershell_helper_direct_capture_streams() {
+  project_dir=$1
+  original_args=${2:-}
+  helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1"
+  stdout_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-stdout.XXXXXX")
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-stderr.XXXXXX")
+  log "running PowerShell helper directly with separate streams in '$project_dir'"
+
+  set +e
+  env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" pwsh -NoLogo -NoProfile -File "$helper_path" >"$stdout_file" 2>"$stderr_file"
+  CAPTURED_STATUS=$?
+  set -e
+
+  CAPTURED_STDOUT=$(cat "$stdout_file")
+  CAPTURED_STDERR=$(cat "$stderr_file")
+  CAPTURED_STDERR_NORMALIZED=$(normalize_output_file_for_assertions "$stderr_file")
+  CAPTURED_STDOUT_BYTE_COUNT=$(wc -c < "$stdout_file" | tr -d '[:space:]')
+  CAPTURED_STDOUT_LINE_COUNT=$(wc -l < "$stdout_file" | tr -d '[:space:]')
+  rm -f "$stdout_file" "$stderr_file"
+}
+
+# Assert against the separately captured stderr view without weakening the
+# exact stdout protocol checks performed by the caller.
+assert_last_stderr_contains() {
+  expected_text=$1
+  failure_message=$2
+  printf '%s' "$CAPTURED_STDERR_NORMALIZED" | grep -Fq "$expected_text" ||
+    fail "$failure_message (normalized-stderr=$CAPTURED_STDERR_NORMALIZED, raw-stderr=$CAPTURED_STDERR)"
 }
 
 # Run the PowerShell helper with a shortened HTTP timeout so the timeout path is

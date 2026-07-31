@@ -276,14 +276,12 @@ function Get-BuildishNoGradleWrapperJarFileSha256 {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-# Quote one argument using the Windows command-line escaping rules expected by the
-# eventual Java process. The helper emits this quoted fragment back to cmd.exe.
+# Quote one argument using the Windows command-line escaping rules expected by
+# the eventual Java process. Always retaining the outer quotes also protects
+# cmd.exe metacharacters while the helper's stdout fragment crosses the batch
+# launcher layer.
 function ConvertTo-BuildishWindowsCommandLineArgument {
   param([string]$Argument)
-
-  if ($Argument -notmatch '[\s"]') {
-    return $Argument
-  }
 
   $builder = [System.Text.StringBuilder]::new()
   $backslash = [char]92
@@ -548,6 +546,95 @@ function Ensure-BuildishNoGradleWrapperJarMetadataFiles {
   }
 }
 
+# Replace both metadata sidecars as one bounded recovery attempt. The checksum
+# and detached signature describe one artifact and must be refreshed together.
+function Refresh-BuildishNoGradleWrapperJarMetadataFiles {
+  param(
+    [string]$Sha256Path,
+    [string]$SignaturePath
+  )
+
+  Remove-Item -LiteralPath $Sha256Path, $SignaturePath -Force -ErrorAction SilentlyContinue
+  Ensure-BuildishNoGradleWrapperJarMetadataFiles
+}
+
+function Assert-BuildishNoGradleWrapperJarMetadataBinding {
+  param(
+    [string]$Sha256Path,
+    [string]$ProjectSha256,
+    [string]$GradleVersion
+  )
+
+  $upstreamWrapperSha256 = Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $Sha256Path
+  if ($upstreamWrapperSha256 -cne $ProjectSha256) {
+    throw "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '$GradleVersion'. Review distributionUrl and the committed pin together."
+  }
+}
+
+function Test-BuildishNoGradleWrapperJarSignatureWithMetadataRefresh {
+  param(
+    [string]$SignaturePath,
+    [string]$PayloadPath,
+    [string]$GpgCommand,
+    [string]$Sha256Path,
+    [string]$ProjectSha256,
+    [string]$GradleVersion,
+    [ref]$MetadataRefreshed
+  )
+
+  try {
+    Test-BuildishNoGradleWrapperJarDetachedSignature -SignaturePath $SignaturePath -PayloadPath $PayloadPath -GpgCommand $GpgCommand
+    return
+  } catch {
+    if ($MetadataRefreshed.Value) {
+      throw
+    }
+    [Console]::Error.WriteLine("buildish-no-gradle-wrapper-jar: warning: Detached signature verification failed; refreshing wrapper metadata once. $($_.Exception.Message)")
+  }
+
+  Refresh-BuildishNoGradleWrapperJarMetadataFiles -Sha256Path $Sha256Path -SignaturePath $SignaturePath
+  $MetadataRefreshed.Value = $true
+  Assert-BuildishNoGradleWrapperJarMetadataBinding -Sha256Path $Sha256Path -ProjectSha256 $ProjectSha256 -GradleVersion $GradleVersion
+  Test-BuildishNoGradleWrapperJarDetachedSignature -SignaturePath $SignaturePath -PayloadPath $PayloadPath -GpgCommand $GpgCommand
+}
+
+function Test-BuildishNoGradleWrapperJarCachedJar {
+  param(
+    [string]$JarPath,
+    [long]$MaxBytes,
+    [string]$ExpectedSha256,
+    [string]$SignaturePath,
+    [string]$GpgCommand,
+    [string]$Sha256Path,
+    [string]$ProjectSha256,
+    [string]$GradleVersion,
+    [ref]$MetadataRefreshed
+  )
+
+  Assert-BuildishMaxFileSize -Path $JarPath -MaxBytes $MaxBytes -Label 'Gradle wrapper JAR'
+  $existingChecksum = Get-BuildishNoGradleWrapperJarFileSha256 -Path $JarPath
+  if ($existingChecksum -ne $ExpectedSha256) {
+    return $false
+  }
+
+  Test-BuildishNoGradleWrapperJarSignatureWithMetadataRefresh -SignaturePath $SignaturePath -PayloadPath $JarPath -GpgCommand $GpgCommand -Sha256Path $Sha256Path -ProjectSha256 $ProjectSha256 -GradleVersion $GradleVersion -MetadataRefreshed $MetadataRefreshed
+  return $true
+}
+
+function Test-BuildishNoGradleWrapperJarCachedJarAllowsMetadataRefresh {
+  param(
+    [string]$JarPath,
+    [string]$ProjectSha256,
+    [long]$MaxBytes
+  )
+
+  if (-not (Test-Path -LiteralPath $JarPath -PathType Leaf)) {
+    return $true
+  }
+  Assert-BuildishMaxFileSize -Path $JarPath -MaxBytes $MaxBytes -Label 'Gradle wrapper JAR'
+  return (Get-BuildishNoGradleWrapperJarFileSha256 -Path $JarPath) -eq $ProjectSha256
+}
+
 function Invoke-BuildishNoGradleWrapperJarGpg {
   param(
     [string]$GpgCommand,
@@ -695,14 +782,21 @@ try {
   $GradleWrapperJarUrl = "https://raw.githubusercontent.com/gradle/gradle/v$GradleSourceVersion/gradle/wrapper/gradle-wrapper.jar"
   $GradleInitScriptPath = Join-Path -Path $env:APP_HOME -ChildPath 'gradle\buildish-no-gradle-wrapper-jar.init.gradle.kts'
   $wrapperJarReady = $false
+  $metadataRefreshed = $false
   Assert-BuildishNoGradleWrapperJarNotReparsePoint -Path $GradleWrapperJarPath -Label 'gradle-wrapper.jar'
 
   # Metadata is cached project-locally so repeated runs can validate an existing
   # wrapper JAR without always redownloading the side files.
   Ensure-BuildishNoGradleWrapperJarMetadataFiles
-  $upstreamWrapperSha256 = Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $GradleWrapperSha256Path
-  if ($upstreamWrapperSha256 -cne $ProjectWrapperSha256) {
-    throw "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '$GradleDistributionVersion'. Review distributionUrl and the committed pin together."
+  try {
+    Assert-BuildishNoGradleWrapperJarMetadataBinding -Sha256Path $GradleWrapperSha256Path -ProjectSha256 $ProjectWrapperSha256 -GradleVersion $GradleDistributionVersion
+  } catch {
+    if (-not (Test-BuildishNoGradleWrapperJarCachedJarAllowsMetadataRefresh -JarPath $GradleWrapperJarPath -ProjectSha256 $ProjectWrapperSha256 -MaxBytes $BuildishWrapperJarMaxBytes)) {
+      throw
+    }
+    Refresh-BuildishNoGradleWrapperJarMetadataFiles -Sha256Path $GradleWrapperSha256Path -SignaturePath $GradleWrapperSignaturePath
+    $metadataRefreshed = $true
+    Assert-BuildishNoGradleWrapperJarMetadataBinding -Sha256Path $GradleWrapperSha256Path -ProjectSha256 $ProjectWrapperSha256 -GradleVersion $GradleDistributionVersion
   }
   $ExpectedWrapperSha256 = $ProjectWrapperSha256
 
@@ -710,14 +804,9 @@ try {
   # and validates against the detached signature, keep it.
   if (Test-Path -LiteralPath $GradleWrapperJarPath -PathType Leaf) {
     try {
-      Assert-BuildishMaxFileSize -Path $GradleWrapperJarPath -MaxBytes $BuildishWrapperJarMaxBytes -Label 'Gradle wrapper JAR'
-      $existingChecksum = Get-BuildishNoGradleWrapperJarFileSha256 -Path $GradleWrapperJarPath
-      if ($existingChecksum -eq $ExpectedWrapperSha256) {
-        Test-BuildishNoGradleWrapperJarDetachedSignature -SignaturePath $GradleWrapperSignaturePath -PayloadPath $GradleWrapperJarPath -GpgCommand $GpgCommand
-        $wrapperJarReady = $true
-      }
+      $wrapperJarReady = Test-BuildishNoGradleWrapperJarCachedJar -JarPath $GradleWrapperJarPath -MaxBytes $BuildishWrapperJarMaxBytes -ExpectedSha256 $ExpectedWrapperSha256 -SignaturePath $GradleWrapperSignaturePath -GpgCommand $GpgCommand -Sha256Path $GradleWrapperSha256Path -ProjectSha256 $ProjectWrapperSha256 -GradleVersion $GradleDistributionVersion -MetadataRefreshed ([ref]$metadataRefreshed)
     } catch {
-      Write-Warning "Existing Gradle wrapper JAR verification failed; the helper will re-download it. $($_.Exception.Message)"
+      [Console]::Error.WriteLine("buildish-no-gradle-wrapper-jar: warning: Existing Gradle wrapper JAR verification failed; the helper will re-download it. $($_.Exception.Message)")
     }
 
     if (-not $wrapperJarReady) {
@@ -737,7 +826,7 @@ try {
         throw 'Downloaded Gradle wrapper JAR checksum did not match the expected SHA-256.'
       }
 
-      Test-BuildishNoGradleWrapperJarDetachedSignature -SignaturePath $GradleWrapperSignaturePath -PayloadPath $DownloadedPath -GpgCommand $GpgCommand
+      Test-BuildishNoGradleWrapperJarSignatureWithMetadataRefresh -SignaturePath $GradleWrapperSignaturePath -PayloadPath $DownloadedPath -GpgCommand $GpgCommand -Sha256Path $GradleWrapperSha256Path -ProjectSha256 $ProjectWrapperSha256 -GradleVersion $GradleDistributionVersion -MetadataRefreshed ([ref]$metadataRefreshed)
     }
   }
 
@@ -745,6 +834,6 @@ try {
   # to the final Java invocation. Returning an empty string is the idempotent case.
   [Console]::Out.WriteLine((Get-BuildishNoGradleWrapperJarInjectedInitScriptArguments -InitScriptPath $GradleInitScriptPath))
 } catch {
-  Write-Error "buildish-no-gradle-wrapper-jar: $($_.Exception.Message)"
+  [Console]::Error.WriteLine("buildish-no-gradle-wrapper-jar: $($_.Exception.Message)")
   exit 1
 }

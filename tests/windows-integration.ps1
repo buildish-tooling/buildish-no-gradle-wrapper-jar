@@ -230,6 +230,30 @@ try {
   }
   Assert-BuildishMetadataForVersion -ProjectDirectory $projectDirectory -GradleVersion $TwoSegmentGradleVersion
 
+  $noInitScriptProjectDirectory = Join-Path -Path $testRoot -ChildPath 'recovery without init script'
+  Copy-Item -LiteralPath $projectDirectory -Destination $noInitScriptProjectDirectory -Recurse
+  $noInitScriptJarPath = Join-Path -Path $noInitScriptProjectDirectory -ChildPath 'gradle\wrapper\gradle-wrapper.jar'
+  Remove-Item -LiteralPath (Join-Path -Path $noInitScriptProjectDirectory -ChildPath 'gradle\buildish-no-gradle-wrapper-jar.init.gradle.kts') -Force
+  $oversizedJarStream = [System.IO.File]::Open($noInitScriptJarPath, [System.IO.FileMode]::Create)
+  try { $oversizedJarStream.SetLength(10485761) } finally { $oversizedJarStream.Dispose() }
+
+  Write-BuildishWindowsTestLog "recovering through gradlew.bat without an init script in '$noInitScriptProjectDirectory'"
+  Invoke-BuildishWithGradleUserHome -ProjectDirectory $noInitScriptProjectDirectory -Label 'cmd gradlew.bat recovery without init script' -Command {
+    Push-Location $noInitScriptProjectDirectory
+    try { & cmd.exe /d /c 'gradlew.bat --no-daemon help' } finally { Pop-Location }
+  }
+  Assert-BuildishMetadataForVersion -ProjectDirectory $noInitScriptProjectDirectory -GradleVersion $TwoSegmentGradleVersion
+
+  $metacharProjectDirectory = Join-Path -Path $testRoot -ChildPath 'windows&launcher^(meta)%pct!bang'
+  Copy-Item -LiteralPath $projectDirectory -Destination $metacharProjectDirectory -Recurse
+
+  Write-BuildishWindowsTestLog "running batch launcher from metacharacter path '$metacharProjectDirectory'"
+  Invoke-BuildishWithGradleUserHome -ProjectDirectory $metacharProjectDirectory -Label 'cmd gradlew.bat help from metacharacter path' -Command {
+    Push-Location $metacharProjectDirectory
+    try { & cmd.exe /d /c 'gradlew.bat --no-daemon help' } finally { Pop-Location }
+  }
+  Assert-BuildishMetadataForVersion -ProjectDirectory $metacharProjectDirectory -GradleVersion $TwoSegmentGradleVersion
+
   Write-BuildishWindowsTestLog 'all Windows launcher integration checks passed.'
 } finally {
   Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue

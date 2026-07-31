@@ -31,6 +31,7 @@ EXPECTED_MANIFEST_SHA256='__BUILDISH_BOOTSTRAP_INSTALL_MANIFEST_SHA256__'
 FINGERPRINT='__BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_FINGERPRINT__'
 MAX_METADATA_BYTES=65536
 MAX_PAYLOAD_BYTES=262144
+HTTP_TIMEOUT_SECONDS=${BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS:-60}
 FILES='install.sh buildish-no-gradle-wrapper-jar.sh buildish-no-gradle-wrapper-jar.ps1 buildish-no-gradle-wrapper-jar.init.gradle.kts'
 
 die() {
@@ -61,6 +62,8 @@ EOF
 }
 
 cleanup() {
+  [ -z "${download_pid:-}" ] || kill "$download_pid" >/dev/null 2>&1 || true
+  [ -z "${watchdog_pid:-}" ] || kill "$watchdog_pid" >/dev/null 2>&1 || true
   [ -z "${bootstrap_temp_dir:-}" ] || rm -rf "$bootstrap_temp_dir"
   [ -z "${gpg_root:-}" ] || rm -rf "$gpg_root"
 }
@@ -123,11 +126,92 @@ manifest_sha() {
   printf '%s' "$checksum"
 }
 
+# Stream at most one 4096-byte block beyond the declared limit. The extra block
+# distinguishes an exact-boundary response from an oversized response even when
+# the server omits Content-Length. Closing the FIFO then stops the downloader.
+download() {
+  target_path=$1
+  download_url=$2
+  resource_label=$3
+  max_size_bytes=$4
+  fifo_path="${target_path}.fifo"
+  stderr_path="${target_path}.stderr"
+  timeout_marker_path="${target_path}.timeout"
+  download_status=0
+  reader_status=0
+  watchdog_pid=''
+
+  rm -f "$target_path" "$fifo_path" "$stderr_path" "$timeout_marker_path"
+  mkfifo "$fifo_path" || die "Unable to create a bounded download pipe for ${resource_label}."
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL \
+      --connect-timeout "$HTTP_TIMEOUT_SECONDS" \
+      --max-time "$HTTP_TIMEOUT_SECONDS" \
+      --max-filesize "$max_size_bytes" \
+      "$download_url" > "$fifo_path" 2> "$stderr_path" &
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O - "$download_url" > "$fifo_path" 2> "$stderr_path" &
+  else
+    rm -f "$fifo_path"
+    die "Either 'curl' or 'wget' is required to download ${resource_label}."
+  fi
+  download_pid=$!
+
+  if ! command -v curl >/dev/null 2>&1; then
+    (
+      sleep "$HTTP_TIMEOUT_SECONDS"
+      : > "$timeout_marker_path"
+      kill "$download_pid" >/dev/null 2>&1 || true
+    ) &
+    watchdog_pid=$!
+  fi
+
+  block_count=$((max_size_bytes / 4096 + 1))
+  dd if="$fifo_path" of="$target_path" bs=4096 count="$block_count" 2>/dev/null || reader_status=$?
+  rm -f "$fifo_path"
+  wait "$download_pid" || download_status=$?
+  download_pid=''
+  if [ -n "$watchdog_pid" ]; then
+    kill "$watchdog_pid" >/dev/null 2>&1 || true
+    wait "$watchdog_pid" >/dev/null 2>&1 || true
+    watchdog_pid=''
+  fi
+
+  download_output=$(cat "$stderr_path" 2>/dev/null || true)
+  actual_size=$(wc -c < "$target_path" | tr -d '[:space:]')
+  rm -f "$stderr_path"
+
+  if [ "$actual_size" -gt "$max_size_bytes" ] || [ "$download_status" -eq 63 ] || printf '%s' "$download_output" | grep -Fq 'Maximum file size exceeded'; then
+    rm -f "$target_path" "$timeout_marker_path"
+    die "${resource_label} exceeded the maximum allowed size of ${max_size_bytes} bytes."
+  fi
+  if [ -f "$timeout_marker_path" ] || [ "$download_status" -eq 28 ]; then
+    rm -f "$target_path" "$timeout_marker_path"
+    die "Downloading ${resource_label} from '${download_url}' timed out after ${HTTP_TIMEOUT_SECONDS} seconds."
+  fi
+  rm -f "$timeout_marker_path"
+  if [ "$reader_status" -ne 0 ] || [ "$download_status" -ne 0 ]; then
+    [ -n "$download_output" ] && printf '%s\n' "$download_output" >&2
+    rm -f "$target_path"
+    die "Unable to download ${resource_label} from '${download_url}'."
+  fi
+}
+
 command -v gpg >/dev/null 2>&1 || die "Required command 'gpg' was not found on PATH."
 command -v mktemp >/dev/null 2>&1 || die "Required command 'mktemp' was not found on PATH."
 command -v grep >/dev/null 2>&1 || die "Required command 'grep' was not found on PATH."
+command -v mkfifo >/dev/null 2>&1 || die "Required command 'mkfifo' was not found on PATH."
+command -v dd >/dev/null 2>&1 || die "Required command 'dd' was not found on PATH."
 printf '%s' "$EXPECTED_MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$' ||
   die 'Pinned release manifest SHA-256 must be exactly 64 lowercase hexadecimal characters.'
+case $HTTP_TIMEOUT_SECONDS in
+  ''|*[!0-9]*) die 'BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS must be a positive integer.' ;;
+esac
+case $HTTP_TIMEOUT_SECONDS in
+  *[1-9]*) ;;
+  *) die 'BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS must be a positive integer.' ;;
+esac
 
 TARGET_DIR='.'
 case $# in
@@ -148,46 +232,15 @@ mkdir "$files_dir"
 for file_name in $FILES; do
   target_path="$files_dir/$file_name"
   file_url="$BASE_URL/$file_name"
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --output "$target_path" "$file_url" || die "Unable to download file '$file_name' from '$file_url'."
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$target_path" "$file_url" || die "Unable to download file '$file_name' from '$file_url'."
-  else
-    die "Either 'curl' or 'wget' is required to download file '$file_name'."
-  fi
-
-  actual_size=$(wc -c < "$target_path" | tr -d '[:space:]')
-  [ "$actual_size" -le "$MAX_PAYLOAD_BYTES" ] ||
-    die "File '$file_name' exceeded the maximum allowed size of ${MAX_PAYLOAD_BYTES} bytes."
+  download "$target_path" "$file_url" "File '$file_name'" "$MAX_PAYLOAD_BYTES"
 done
 
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --output "$manifest_path" "$BASE_URL/$MANIFEST" || die "Unable to download checksum manifest from '$BASE_URL/$MANIFEST'."
-elif command -v wget >/dev/null 2>&1; then
-  wget -q -O "$manifest_path" "$BASE_URL/$MANIFEST" || die "Unable to download checksum manifest from '$BASE_URL/$MANIFEST'."
-else
-  die "Either 'curl' or 'wget' is required to download checksum manifest."
-fi
-
-actual_size=$(wc -c < "$manifest_path" | tr -d '[:space:]')
-[ "$actual_size" -le "$MAX_METADATA_BYTES" ] ||
-  die "Checksum manifest exceeded the maximum allowed size of ${MAX_METADATA_BYTES} bytes."
+download "$manifest_path" "$BASE_URL/$MANIFEST" 'Checksum manifest' "$MAX_METADATA_BYTES"
 actual_manifest_sha256=$(sha256_file "$manifest_path")
 [ "$actual_manifest_sha256" = "$EXPECTED_MANIFEST_SHA256" ] ||
   die 'Checksum manifest did not match the release-pinned SHA-256.'
 
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --output "$signature_path" "$BASE_URL/$SIGNATURE" || die "Unable to download checksum manifest detached signature from '$BASE_URL/$SIGNATURE'."
-elif command -v wget >/dev/null 2>&1; then
-  wget -q -O "$signature_path" "$BASE_URL/$SIGNATURE" || die "Unable to download checksum manifest detached signature from '$BASE_URL/$SIGNATURE'."
-else
-  die "Either 'curl' or 'wget' is required to download checksum manifest detached signature."
-fi
-
-actual_size=$(wc -c < "$signature_path" | tr -d '[:space:]')
-[ "$actual_size" -le "$MAX_METADATA_BYTES" ] ||
-  die "Checksum manifest detached signature exceeded the maximum allowed size of ${MAX_METADATA_BYTES} bytes."
+download "$signature_path" "$BASE_URL/$SIGNATURE" 'Checksum manifest detached signature' "$MAX_METADATA_BYTES"
 
 gpg_root=$(mktemp -d "${TMPDIR:-/tmp}/buildish-bootstrap-install-gpg.XXXXXX") ||
   die 'Unable to create a temporary GnuPG home.'
