@@ -489,34 +489,6 @@ run_powershell_installer_flow() {
   assert_metadata_for_version "$project_dir" "$installed_version"
 }
 
-# Exercise the shared launcher-patch contract across install and init-script
-# sources so one path cannot silently drift from the others.
-exercise_launcher_patch_contract_consistency() {
-  log 'checking launcher patch contract consistency across install and init-script sources'
-
-  python3 - <<'PY' "$TOOL_DIR/install.sh" "$TOOL_DIR/install.ps1" "$TOOL_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" || fail 'launcher patch contract drifted across installer/init-script sources.'
-from pathlib import Path
-import re
-import sys
-
-paths = [Path(argument) for argument in sys.argv[1:]]
-texts = {path.name: path.read_text().replace('\r\n', '\n') for path in paths}
-shared_patterns = [
-    r'for %%i in \(.+%APP_HOME%.+\) do set APP_HOME=%%~fi',
-    r'powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .*buildish-no-gradle-wrapper-jar\.ps1',
-    r'org\.gradle\.wrapper\.GradleWrapperMain %\*',
-    r'-classpath .*gradle-wrapper\.jar.* %\*',
-    r'-jar .*gradle-wrapper\.jar.* %\*',
-    r'endlocal .* %\* .* call :exitWithErrorLevel',
-]
-
-for name, text in texts.items():
-    for pattern in shared_patterns:
-        if re.search(pattern, text) is None:
-            raise SystemExit(f"{name} is missing launcher contract pattern: {pattern!r}")
-PY
-}
-
 # Reserved placeholder for installer-side download size checks so future work
 # can slot into the suite without reshaping the surrounding runners.
 exercise_installer_oversized_tool_download_failure() {
@@ -540,7 +512,6 @@ run_installer_suite() {
   log "starting installer suite (test_root='$test_root')"
   exercise_standalone_installation_documentation_contract
   exercise_output_normalization_contract
-  exercise_launcher_patch_contract_consistency
   exercise_wrapper_update_to_version "$posix_project_dir" '' "$UPDATED_GRADLE_VERSION"
   run_powershell_installer_flow "$powershell_project_dir"
   exercise_installer_missing_properties_failure "$test_root/posix-installer-missing-properties" posix

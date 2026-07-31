@@ -46,6 +46,9 @@ If logic is generic and used by several suites, it belongs in `lib/`.
 Topic-oriented scenario groups.
 
 - `integration-environment.sh` covers tool-selection and CLI help contracts.
+- `integration-launcher-contract.sh` compares all supported launcher generations
+  against canonical byte-for-byte input/output fixtures for both installers and
+  the Gradle init script.
 - `integration-installer.sh` covers installer and unsafe-dev flows.
 - `integration-helper-edge.sh` covers recovery, validation, timeout, and other edge cases.
 - `integration-init-script.sh` covers init-script-specific behavior.

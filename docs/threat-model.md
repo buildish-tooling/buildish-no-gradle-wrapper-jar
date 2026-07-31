@@ -28,7 +28,7 @@ version N is triaged against the model shipped with N, not against later `main` 
 
 Implementation review baseline: `2748f332c2b1de75f8a42b18ee71fcb69e63ab2a`. *(maintainer)*
 
-Security-sensitive content digest: `d7f9038e0a5fa7be991ae2aaeb26272fe5e30158`. The digest covers the paths declared in
+Security-sensitive content digest: `f9d9dc74dd841bafa9c8b5ab9777cad9ca67316b`. The digest covers the paths declared in
 `scripts/security-model-inputs.txt` and is enforced by `make security-model-check`. *(documented)*
 
 Last maintainer review: 2026-07-31. *(maintainer)*
@@ -173,7 +173,9 @@ Operating system and runtime assumptions:
 
 Concurrency assumptions:
 
-- The helper uses temporary files and moves into place to avoid accepting partially written downloads. *(documented)*
+- The helper validates or normalizes downloaded metadata on unpublished
+  temporary paths before moving it into place; later cached checksum validation
+  is read-only. *(documented)*
 - Concurrent `gradlew` executions in the same checkout are not documented as a supported synchronization scenario. *(inferred)*
 - Installer patching is intended to be idempotent, but concurrent installer runs against the same checkout are not documented as supported. *(inferred)*
 

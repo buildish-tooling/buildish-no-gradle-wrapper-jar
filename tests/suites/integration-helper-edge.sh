@@ -50,6 +50,58 @@ exercise_helper_recovery_with_cached_metadata() {
   assert_metadata_for_version "$project_dir" "$version"
 }
 
+# Cached checksum validation must tolerate harmless formatting differences
+# without rewriting a project file on every launcher invocation.
+exercise_helper_cached_checksum_read_only() {
+  project_dir=$1
+  version=$2
+  helper_kind=$3
+  checksum_path=$project_dir/gradle/wrapper/gradle-wrapper-$version.sha256
+  checksum_snapshot=$project_dir/cached-checksum.before
+  checksum=$(tr -d '\r\n' < "$checksum_path" | tr '[:lower:]' '[:upper:]')
+
+  log "exercising $helper_kind helper read-only cached-checksum validation in '$project_dir'"
+  printf '%s\r\n' "$checksum" > "$checksum_path"
+  cp "$checksum_path" "$checksum_snapshot"
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_succeeded "$helper_kind helper rejected a valid non-canonical cached checksum."
+  cmp -s "$checksum_snapshot" "$checksum_path" ||
+    fail "$helper_kind helper rewrote the cached checksum during a warm validation."
+}
+
+# Newly downloaded checksums are normalized while still temporary so only the
+# canonical lowercase/LF form is atomically published into the project cache.
+exercise_helper_downloaded_checksum_normalization() {
+  project_dir=$1
+  version=$2
+  helper_kind=$3
+  wrapper_dir=$project_dir/gradle/wrapper
+  checksum_path=$wrapper_dir/gradle-wrapper-$version.sha256
+  signature_path=$wrapper_dir/gradle-wrapper-$version.asc
+  jar_path=$wrapper_dir/gradle-wrapper.jar
+  server_root=$project_dir/checksum-normalization-server
+  expected_checksum=$(tr -d '\r\n' < "$checksum_path" | tr '[:upper:]' '[:lower:]')
+  expected_checksum_path=$project_dir/checksum.expected
+
+  log "exercising $helper_kind helper downloaded-checksum normalization in '$project_dir'"
+  mkdir -p "$server_root"
+  printf '%s\r\n' "$(printf '%s' "$expected_checksum" | tr '[:lower:]' '[:upper:]')" > "$server_root/wrapper.sha256"
+  cp "$signature_path" "$server_root/wrapper.asc"
+  cp "$jar_path" "$server_root/gradle-wrapper.jar"
+  rm -f "$checksum_path" "$signature_path" "$jar_path"
+  printf '%s\n' "$expected_checksum" > "$expected_checksum_path"
+
+  start_static_http_server "$server_root"
+  configure_helper_download_urls "$project_dir" "$helper_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  stop_test_http_server
+
+  assert_last_command_succeeded "$helper_kind helper rejected a valid non-canonical downloaded checksum."
+  cmp -s "$expected_checksum_path" "$checksum_path" ||
+    fail "$helper_kind helper did not publish the downloaded checksum in canonical lowercase/LF form."
+}
+
 # Exercise helper recovery from malformed cached checksum or signature metadata
 # so stale sidecars cannot pin the project in a broken state.
 exercise_helper_malformed_metadata_recovery() {
@@ -552,6 +604,12 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-corrupted-jar-cached-metadata"
   exercise_helper_recovery_with_cached_metadata "$scenario_root/posix-corrupted-jar-cached-metadata" "$posix_version" posix
 
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-cached-checksum-read-only"
+  exercise_helper_cached_checksum_read_only "$scenario_root/posix-cached-checksum-read-only" "$posix_version" posix
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-downloaded-checksum-normalization"
+  exercise_helper_downloaded_checksum_normalization "$scenario_root/posix-downloaded-checksum-normalization" "$posix_version" posix
+
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-corrupted-jar-missing-metadata"
   exercise_helper_recovery_scenario "$scenario_root/posix-corrupted-jar-missing-metadata" "$posix_version" posix
 
@@ -612,6 +670,12 @@ run_helper_edge_case_suite() {
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-corrupted-jar-cached-metadata"
   exercise_helper_recovery_with_cached_metadata "$scenario_root/powershell-corrupted-jar-cached-metadata" "$powershell_version" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-cached-checksum-read-only"
+  exercise_helper_cached_checksum_read_only "$scenario_root/powershell-cached-checksum-read-only" "$powershell_version" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-downloaded-checksum-normalization"
+  exercise_helper_downloaded_checksum_normalization "$scenario_root/powershell-downloaded-checksum-normalization" "$powershell_version" powershell
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-recovery-stream-protocol"
   exercise_powershell_helper_recovery_stream_protocol "$scenario_root/powershell-recovery-stream-protocol" "$powershell_version"

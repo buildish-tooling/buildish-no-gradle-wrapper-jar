@@ -52,6 +52,8 @@ BOOTSTRAP_TEST_PUBLIC_KEY_PATH=''
 . "$TESTS_DIR/lib/integration-fixtures.sh"
 # shellcheck source=tests/suites/integration-environment.sh
 . "$TESTS_DIR/suites/integration-environment.sh"
+# shellcheck source=tests/suites/integration-launcher-contract.sh
+. "$TESTS_DIR/suites/integration-launcher-contract.sh"
 # shellcheck source=tests/suites/integration-installer.sh
 . "$TESTS_DIR/suites/integration-installer.sh"
 # shellcheck source=tests/suites/integration-helper-edge.sh
@@ -71,6 +73,7 @@ run_default_integration_suite() {
 
   log "starting default integration suite (test_root='$test_root')"
   run_environment_contract_suite "$test_root/environment-contracts"
+  run_launcher_contract_suite "$test_root/launcher-contract"
   run_installer_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
   run_helper_edge_case_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
   run_init_script_focused_suite "$test_root"

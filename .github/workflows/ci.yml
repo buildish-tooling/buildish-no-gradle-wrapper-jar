@@ -292,25 +292,32 @@ jobs:
       - zizmor
     runs-on: ubuntu-latest
     steps:
-      - name: Assert all required jobs succeeded or were intentionally skipped
+      - name: Assert required jobs succeeded and CodeQL was acceptable
         env:
           CHECK_RESULT: ${{ needs.check.result }}
           WINDOWS_CHECK_RESULT: ${{ needs.windows-check.result }}
           CODEQL_RESULT: ${{ needs.codeql.result }}
           ZIZMOR_RESULT: ${{ needs.zizmor.result }}
         run: |
-          for result in \
-            "$CHECK_RESULT" \
-            "$WINDOWS_CHECK_RESULT" \
-            "$CODEQL_RESULT" \
-            "$ZIZMOR_RESULT"; do
-            case "$result" in
-              success|skipped) ;;
-              *)
-                echo "Unexpected dependency result: $result"
-                exit 1
-                ;;
-            esac
-          done
+          if [ "$CHECK_RESULT" != success ]; then
+            echo "Linux check did not succeed: $CHECK_RESULT"
+            exit 1
+          fi
+          if [ "$WINDOWS_CHECK_RESULT" != success ]; then
+            echo "Windows check did not succeed: $WINDOWS_CHECK_RESULT"
+            exit 1
+          fi
+          if [ "$ZIZMOR_RESULT" != success ]; then
+            echo "zizmor did not succeed: $ZIZMOR_RESULT"
+            exit 1
+          fi
+
+          case "$CODEQL_RESULT" in
+            success|skipped) ;;
+            *)
+              echo "CodeQL had an unexpected result: $CODEQL_RESULT"
+              exit 1
+              ;;
+          esac
 
           echo "All required jobs succeeded for this event."

@@ -360,9 +360,8 @@ function Get-BuildishNoGradleWrapperJarProjectSha256Pin {
   return $propertyValue
 }
 
-# Read, validate, normalize, and return the expected SHA-256 value from a cached
-# checksum file. The normalized file is written back so later comparisons use a
-# stable format.
+# Read, validate, normalize in memory, and return the expected SHA-256 value
+# without modifying a cached checksum file.
 function Get-BuildishNoGradleWrapperJarExpectedSha256 {
   param([string]$Path)
 
@@ -372,7 +371,6 @@ function Get-BuildishNoGradleWrapperJarExpectedSha256 {
   if ($checksum -notmatch '^[0-9a-f]{64}$') {
     throw "Wrapper checksum file '$Path' did not contain a valid SHA-256 value."
   }
-  Write-BuildishNoGradleWrapperJarAsciiFile -Path $Path -Content "$checksum`n"
   return $checksum
 }
 
@@ -394,7 +392,8 @@ function Test-BuildishNoGradleWrapperJarChecksumFile {
 function Assert-BuildishNoGradleWrapperJarDownloadedChecksumFile {
   param([string]$Path)
 
-  [void](Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $Path)
+  $checksum = Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $Path
+  Write-BuildishNoGradleWrapperJarAsciiFile -Path $Path -Content "$checksum`n"
 }
 
 # Lightweight structural check for detached-signature cache files. Full crypto

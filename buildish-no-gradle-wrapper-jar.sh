@@ -165,29 +165,34 @@ buildish_no_gradle_wrapper_jar_download_to_temp_path() {
   }
 }
 
-# Download to a temporary file first and move into place only after the transfer
-# succeeds. This avoids leaving behind partially written metadata files if the
-# network call fails or is interrupted.
+# Download to a temporary file, validate or normalize it there, and only then
+# move it into place. This avoids publishing partial or invalid metadata and
+# keeps later cached validation read-only.
 buildish_no_gradle_wrapper_jar_download_to_file() {
   target_path=$1
   download_url=$2
   resource_label=$3
   max_size_bytes=$4
+  downloaded_validator_function=$5
+  invalid_download_message=$6
   buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_WRAPPER_DIR" 'Gradle wrapper directory'
   buildish_no_gradle_wrapper_jar_assert_not_symlink "$target_path" "$resource_label"
   temp_path=$(mktemp "${BUILDISH_HELPER_WRAPPER_DIR}/.buildish-no-gradle-wrapper-jar.XXXXXX") ||
     buildish_no_gradle_wrapper_jar_fail "Unable to create a temporary file for ${resource_label}."
 
   buildish_no_gradle_wrapper_jar_download_to_temp_path "$temp_path" "$download_url" "$resource_label" "$max_size_bytes"
+  if ! "$downloaded_validator_function" "$temp_path"; then
+    rm -f "$temp_path"
+    buildish_no_gradle_wrapper_jar_fail "$invalid_download_message"
+  fi
 
   buildish_no_gradle_wrapper_jar_publish_temp_file "$temp_path" "$target_path" "Unable to move ${resource_label} into '${target_path}'."
 }
 
-# Normalize checksum files into the exact shape the helper expects:
-# a single lowercase 64-character SHA-256 hex value with a trailing newline.
-# Normalizing existing files lets the helper tolerate harmless formatting drift,
-# while rejecting malformed content that should be re-downloaded.
-buildish_no_gradle_wrapper_jar_normalize_checksum_file() {
+# Validate checksum files without modifying them. The normalized value remains
+# available to callers, allowing harmless uppercase or newline differences in a
+# cached file without introducing a write or a concurrent-launch race.
+buildish_no_gradle_wrapper_jar_validate_checksum_file() {
   checksum_path=$1
   buildish_no_gradle_wrapper_jar_assert_not_symlink "$checksum_path" 'wrapper checksum'
   buildish_no_gradle_wrapper_jar_file_within_max_size "$checksum_path" "$BUILDISH_HELPER_MAX_METADATA_BYTES" || return 1
@@ -195,6 +200,14 @@ buildish_no_gradle_wrapper_jar_normalize_checksum_file() {
   if ! printf '%s' "$normalized_checksum" | grep -E '^[0-9a-f]{64}$' >/dev/null 2>&1; then
     return 1
   fi
+  return 0
+}
+
+# Normalize a newly downloaded checksum on its unpublished temporary path so
+# the project cache receives one lowercase value with a trailing newline.
+buildish_no_gradle_wrapper_jar_normalize_downloaded_checksum_file() {
+  checksum_path=$1
+  buildish_no_gradle_wrapper_jar_validate_checksum_file "$checksum_path" || return 1
   printf '%s\n' "$normalized_checksum" > "$checksum_path" || return 1
   return 0
 }
@@ -215,18 +228,24 @@ buildish_no_gradle_wrapper_jar_ensure_cached_file() {
   download_url=$2
   resource_label=$3
   max_size_bytes=$4
-  validator_function=$5
-  invalid_download_message=$6
+  cached_validator_function=$5
+  downloaded_validator_function=$6
+  invalid_download_message=$7
 
   buildish_no_gradle_wrapper_jar_assert_not_symlink "$target_path" "$resource_label"
 
-  if [ -f "$target_path" ] && "$validator_function" "$target_path"; then
+  if [ -f "$target_path" ] && "$cached_validator_function" "$target_path"; then
     return 0
   fi
 
   rm -f "$target_path"
-  buildish_no_gradle_wrapper_jar_download_to_file "$target_path" "$download_url" "$resource_label" "$max_size_bytes"
-  "$validator_function" "$target_path" || buildish_no_gradle_wrapper_jar_fail "$invalid_download_message"
+  buildish_no_gradle_wrapper_jar_download_to_file \
+    "$target_path" \
+    "$download_url" \
+    "$resource_label" \
+    "$max_size_bytes" \
+    "$downloaded_validator_function" \
+    "$invalid_download_message"
 }
 
 # Ensure the per-version metadata files are present and structurally valid. If a
@@ -238,7 +257,8 @@ buildish_no_gradle_wrapper_jar_ensure_metadata_files() {
     "$BUILDISH_HELPER_SHA256_URL" \
     'wrapper checksum' \
     "$BUILDISH_HELPER_MAX_METADATA_BYTES" \
-    buildish_no_gradle_wrapper_jar_normalize_checksum_file \
+    buildish_no_gradle_wrapper_jar_validate_checksum_file \
+    buildish_no_gradle_wrapper_jar_normalize_downloaded_checksum_file \
     'Downloaded wrapper checksum was not a valid SHA-256 value.'
 
   buildish_no_gradle_wrapper_jar_ensure_cached_file \
@@ -246,6 +266,7 @@ buildish_no_gradle_wrapper_jar_ensure_metadata_files() {
     "$BUILDISH_HELPER_SIGNATURE_URL" \
     'wrapper detached signature' \
     "$BUILDISH_HELPER_MAX_METADATA_BYTES" \
+    buildish_no_gradle_wrapper_jar_validate_signature_file \
     buildish_no_gradle_wrapper_jar_validate_signature_file \
     'Downloaded wrapper detached signature was not valid ASCII-armored OpenPGP data.'
 }
