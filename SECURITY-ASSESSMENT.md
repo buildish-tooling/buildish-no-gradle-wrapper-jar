@@ -63,7 +63,9 @@ The repository now also contains tiny `bootstrap-install.*` verifier templates d
 
 Those templates verify a signed per-platform payload manifest and then hand off via
 `--trusted-source-dir`, but they intentionally fail closed until a release step renders real release
-URLs and Buildish-managed signing-key material.
+URLs, the exact signed-manifest SHA-256, and Buildish-managed signing-key material. The embedded
+manifest digest selects the intended release payload set; the signature independently proves
+publisher authorization.
 
 The same warning applies to trusted-input overrides:
 
@@ -125,8 +127,8 @@ That substantially reduces the risk of accepting a poisoned `gradle-wrapper.jar`
 project-local cache or from the network.
 
 The main residual design limitation is earlier in the bootstrap chain: the secure, release-based
-`bootstrap-install.*` verifier logic now exists in-repo, but rendered release copies and the real
-Buildish-managed signing key are not operationally published yet.
+`bootstrap-install.*` verifier logic now exists in-repo, but rendered release copies, their exact
+manifest digests, and the real Buildish-managed signing key are not operationally published yet.
 
 The repository also ships explicit `unsafe-dev-install.*` shortcuts for people who consciously want
 a blind-trust development flow against the current main branch. Those scripts are intentionally
@@ -155,9 +157,10 @@ insecure, require an explicit acknowledgement flag, and refuse CI environments.
 - Installers reject symlinks / reparse points instead of following them.
 - `install.sh` and `install.ps1` no longer download helper payloads from the network.
 - `bootstrap-install.*` verifies a detached signature over a per-platform payload manifest in an
-  isolated temporary GPG home before handing off to `install.*`.
+  isolated temporary GPG home and requires that manifest to match the release-pinned SHA-256 before
+  handing off to `install.*`.
 - Checked-in `bootstrap-install.*` copies fail closed until release rendering substitutes the
-  hard-coded release URL and pinned signing-key material.
+  hard-coded release URL, manifest SHA-256, and pinned signing-key material.
 - `unsafe-dev-install.*` requires an explicit `--yes-i-know-this-is-unsafe` acknowledgement.
 - `unsafe-dev-install.*` refuses to run in common CI environments.
 - Windows helper execution rejects Git-for-Windows GPG and requires native Windows GnuPG.
@@ -179,12 +182,12 @@ Affecting area:
 > [!NOTE]
 > `install.sh` and `install.ps1` are already local-only stagers, and `bootstrap-install.*` verifier
 > logic now exists in-repo. The remaining missing piece is release-time rendering/publishing with
-> real URLs and Buildish-managed signing-key material.
+> real URLs, exact per-platform manifest digests, and Buildish-managed signing-key material.
 
 Impact:
 
 - Users do not yet have published, release-rendered `bootstrap-install.*` scripts bound to immutable
-  release URLs and the real signing key.
+  release URLs, the exact signed manifest, and the real signing key.
 - Until that exists, users must either use the reviewed local-copy/manual-verification path or the
   explicitly unsafe `unsafe-dev-install.*` development shortcut.
 
@@ -199,7 +202,7 @@ Notes:
 Recommendation:
 
 - Wire release automation so it renders and publishes `bootstrap-install.*` with hard-coded release
-  URLs and the real signing-key material described in
+  URLs, the exact per-platform manifest SHA-256, and the real signing-key material described in
   [site/pages/secure-installer-approach.md](site/pages/secure-installer-approach.md).
 - Manage and publish the Buildish-controlled signing key and supporting `KEYS`
   material for operators.
@@ -319,7 +322,7 @@ reviewed project-owned digest and appears to prevent silent acceptance of poison
 cached JAR contents under the normal threat model.
 
 The most important remaining work is operationalizing the secure release-based
-`bootstrap-install.*` path by rendering and publishing release-specific copies with real signing
-material. Outside that, the runtime helper, launcher patching, bootstrap verifier implementation, CI
-bootstrap, and current operator guidance are in good shape for this stage of the project, while
+`bootstrap-install.*` path by rendering and publishing release-specific copies with exact manifest
+digests and real signing material. Outside that, the runtime helper, launcher patching, bootstrap
+verifier implementation, CI bootstrap, and current operator guidance are in good shape, while
 `unsafe-dev-install.*` stays an explicitly insecure development-only escape hatch.

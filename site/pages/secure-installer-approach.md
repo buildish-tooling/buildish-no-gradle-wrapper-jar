@@ -53,7 +53,7 @@ These tiny bootstrap scripts only fetch, verify, and hand off to the real instal
 
 The repository now contains both scripts as release templates. They already implement the signed
 bootstrap logic, and they intentionally fail closed until a release step renders the hard-coded base
-URL and pinned signing-key material.
+URL, exact signed-manifest SHA-256, and pinned signing-key material.
 
 The handoff into the real installer should happen via `--trusted-source-dir`, not via a live
 network fetch inside `install.sh` or `install.ps1`.
@@ -125,8 +125,8 @@ another simple release-time substitution step. What matters is the contract:
 
 - the checked-in repository copies are templates and must fail closed until rendered
 - generation happens before signing and publishing the release assets
-- only a tiny set of values is substituted, such as version, asset URLs, and pinned signing
-  fingerprint or key material
+- only a tiny set of values is substituted, such as version, asset URLs, the exact manifest
+  SHA-256, and pinned signing fingerprint or key material
 - the generated bootstrap scripts are the things users review and execute
 - no runtime URL templating or environment-driven remote override logic is added back into the
   bootstrap scripts
@@ -141,13 +141,18 @@ purpose update client.
 
 The recommended pinned material is:
 
+- the exact SHA-256 of the selected release's signed payload manifest, and
 - the expected release-signing key fingerprint, or
 - the armored release-signing public key
 
 The current recommendation is **not** to embed every payload digest directly in the bootstrap
-script. Instead, the bootstrap verifier should verify a signed checksum manifest for the installer
-payload set and then hand off the verified local directory to `install.*` via
-`--trusted-source-dir`.
+script. Instead, the bootstrap pins the one manifest digest that selects the release, verifies the
+manifest's detached signature, uses that manifest to verify the complete installer payload set, and
+then hands off the verified local directory to `install.*` via `--trusted-source-dir`.
+
+The manifest digest and signature serve different purposes. The embedded digest prevents another
+validly signed release manifest from being replayed at the selected release URL. The signature
+proves that the selected manifest was authorized by the pinned Buildish release key.
 
 The current implementation uses one signed payload manifest per platform:
 
@@ -182,11 +187,13 @@ require_command curl_or_wget
 require_command sha256sum_or_shasum
 
 key_fingerprint='PINNED_RELEASE_SIGNING_KEY'
+expected_manifest_sha256='PINNED_RELEASE_MANIFEST_SHA256'
 base_url='https://github.com/buildish-tooling/buildish-no-gradle-wrapper-jar/releases/download/vX.Y.Z'
 manifest='bootstrap-install-posix.sha256'
 payload_dir='./verified-payload'
 
 download_payload_set "$base_url" "$payload_dir"
+verify_sha256 "$manifest" "$expected_manifest_sha256"
 verify_detached_signature "$manifest.asc" "$manifest" "$key_fingerprint"
 verify_manifest_entries "$manifest" "$payload_dir"
 
@@ -200,12 +207,14 @@ Require-NativeWindowsGpg
 Require-Command Invoke-WebRequest
 
 $expectedFingerprint = 'PINNED_RELEASE_SIGNING_KEY'
+$expectedManifestSha256 = 'PINNED_RELEASE_MANIFEST_SHA256'
 $baseUrl = 'https://github.com/buildish-tooling/buildish-no-gradle-wrapper-jar/releases/download/vX.Y.Z'
 $manifest = 'bootstrap-install-powershell.sha256'
 $manifestSignature = "$manifest.asc"
 $payloadDirectory = '.\verified-payload'
 
 Get-PayloadSet $baseUrl $payloadDirectory
+Assert-FileSha256 $manifest $expectedManifestSha256
 Assert-DetachedSignature $manifestSignature $manifest $expectedFingerprint
 Assert-ManifestEntries $manifest $payloadDirectory
 
@@ -228,7 +237,8 @@ Their only job is to establish trust in the downloaded installer payload and the
 - publish the real installers as immutable GitHub release assets
 - keep `KEYS` at <https://buildish.org/KEYS>, not as a release asset
 - keep `bootstrap-install.*` tiny and release-rendered
-- pin release-signing trust material in those bootstrap scripts
+- pin the selected release manifest digest and release-signing trust material in those bootstrap
+  scripts
 - hand off from bootstrap into `install.*` via `--trusted-source-dir`
 - use a detached per-platform SHA-256 manifest plus `.asc` signature that covers the complete payload set
 - assume a minimal toolset and fail hard with actionable errors if it is missing

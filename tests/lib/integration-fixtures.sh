@@ -62,8 +62,9 @@ render_bootstrap_release_script() {
   base_url=$4
   trusted_fingerprint=$5
   public_key_path=$6
+  expected_manifest_sha256=$7
 
-  python3 - <<'PY' "$template_path" "$output_path" "$bootstrap_kind" "$base_url" "$trusted_fingerprint" "$public_key_path" || exit 1
+  python3 - <<'PY' "$template_path" "$output_path" "$bootstrap_kind" "$base_url" "$trusted_fingerprint" "$public_key_path" "$expected_manifest_sha256" || exit 1
 from pathlib import Path
 import re
 import sys
@@ -74,6 +75,7 @@ bootstrap_kind = sys.argv[3]
 base_url = sys.argv[4]
 trusted_fingerprint = sys.argv[5]
 public_key = Path(sys.argv[6]).read_text().rstrip('\n')
+expected_manifest_sha256 = sys.argv[7]
 text = template_path.read_text()
 
 drop_pattern = r'(?ms)^# __BUILDISH_BOOTSTRAP_INSTALL_DROP_START__\n.*?^# __BUILDISH_BOOTSTRAP_INSTALL_DROP_END__\n?'
@@ -86,11 +88,13 @@ if bootstrap_kind == 'posix':
         r"^BASE_URL=.*$": f"BASE_URL='{base_url}'",
         r"^FINGERPRINT=.*$": f"FINGERPRINT='{trusted_fingerprint}'",
     }
+    replacements[r"^EXPECTED_MANIFEST_SHA256=.*$"] = f"EXPECTED_MANIFEST_SHA256='{expected_manifest_sha256}'"
 elif bootstrap_kind == 'powershell':
     replacements = {
         r'^\$BaseUrl = .*$': f'$BaseUrl = "{base_url}"',
         r'^\$Fingerprint = .*$': f'$Fingerprint = "{trusted_fingerprint}"',
     }
+    replacements[r'^\$ExpectedManifestSha256 = .*$'] = f'$ExpectedManifestSha256 = "{expected_manifest_sha256}"'
 else:
     raise SystemExit(1)
 
@@ -131,6 +135,42 @@ sign_bootstrap_manifest() {
 
   gpg --batch --homedir "$BOOTSTRAP_TEST_GPG_HOME" --pinentry-mode loopback --passphrase '' --armor --local-user "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" --output "$signature_path" --detach-sign "$manifest_path" >/dev/null 2>&1 ||
     fail "unable to sign bootstrap payload manifest '$manifest_path'."
+}
+
+# Replace a prepared fixture's payload set and manifest with a different valid
+# set signed by the same trusted key. The already-rendered bootstrap remains
+# pinned to the first manifest, modeling replay at an immutable release URL.
+replace_bootstrap_fixture_with_alternate_signed_payload_set() {
+  server_root=$1
+  bootstrap_kind=$2
+
+  case "$bootstrap_kind" in
+    posix)
+      installer_file='install.sh'
+      manifest_name='bootstrap-install-posix.sha256'
+      signature_name='bootstrap-install-posix.sha256.asc'
+      ;;
+    powershell)
+      installer_file='install.ps1'
+      manifest_name='bootstrap-install-powershell.sha256'
+      signature_name='bootstrap-install-powershell.sha256.asc'
+      ;;
+    *)
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  printf '\n# Alternate signed release payload used by the replay regression.\n' \
+    >> "$server_root/buildish-no-gradle-wrapper-jar.sh"
+  write_bootstrap_manifest \
+    "$server_root" \
+    "$server_root/$manifest_name" \
+    "$installer_file" \
+    buildish-no-gradle-wrapper-jar.sh \
+    buildish-no-gradle-wrapper-jar.ps1 \
+    buildish-no-gradle-wrapper-jar.init.gradle.kts
+  rm -f "$server_root/$signature_name"
+  sign_bootstrap_manifest "$server_root/$manifest_name" "$server_root/$signature_name"
 }
 
 # Tear down whichever local HTTP server is active so each scenario starts from a
@@ -241,6 +281,7 @@ prepare_bootstrap_release_fixture() {
   bootstrap_kind=$2
   manifest_mode=$3
   signature_mode=$4
+  manifest_pin_mode=${5:-valid}
 
   rm -rf "$server_root"
   mkdir -p "$server_root"
@@ -298,7 +339,19 @@ prepare_bootstrap_release_fixture() {
   esac
 
   start_static_http_server "$server_root"
-  render_bootstrap_release_script "$bootstrap_template_path" "$bootstrap_output_path" "$bootstrap_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT" "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" "$BOOTSTRAP_TEST_PUBLIC_KEY_PATH"
+  case "$manifest_pin_mode" in
+    valid)
+      expected_manifest_sha256=$(hash_file "$server_root/$manifest_name")
+      ;;
+    malformed)
+      expected_manifest_sha256='not-a-canonical-sha256'
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown bootstrap manifest pin mode '$manifest_pin_mode'"
+      ;;
+  esac
+  render_bootstrap_release_script "$bootstrap_template_path" "$bootstrap_output_path" "$bootstrap_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT" "$BOOTSTRAP_TEST_SIGNER_FINGERPRINT" "$BOOTSTRAP_TEST_PUBLIC_KEY_PATH" "$expected_manifest_sha256"
 }
 
 # Copy a project fixture into an isolated scenario directory so each exercise is

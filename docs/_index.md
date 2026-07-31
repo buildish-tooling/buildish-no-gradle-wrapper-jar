@@ -151,9 +151,11 @@ The `unsafe-dev-install.*` one-liners above exist only as explicit development s
 not suitable for CI, automation, or environments with secrets.
 
 The repository now also contains `bootstrap-install.*` release templates for the secure remote path,
-but those checked-in copies intentionally fail until a release step renders pinned release URLs and
-signing-key material into them. Until those rendered release assets are published, the reviewed
-local-copy flow above remains the preferred safe path.
+but those checked-in copies intentionally fail until a release step renders pinned release URLs,
+the exact signed-manifest SHA-256, and signing-key material into them. The manifest pin prevents a
+different validly signed release payload set from being replayed at the selected release URL. Until
+those rendered release assets are published, the reviewed local-copy flow above remains the
+preferred safe path.
 
 For the detailed, non-versioned trust model and the current security assessment, see
 [`security.md`](../security/).

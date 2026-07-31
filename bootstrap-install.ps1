@@ -16,7 +16,7 @@
  Tiny secure bootstrap verifier for the no-gradle-wrapper-jar installer.
 
  Important: the repository copy is a release template. A release step must fill in
- the hard-coded base URL and pinned signing-key material before users execute it.
+ the hard-coded base URL, manifest digest, and pinned signing-key material before users execute it.
  That keeps the final published script static and reviewable without reintroducing
  runtime remote-override knobs.
 #>
@@ -28,6 +28,7 @@ $Tool = 'buildish-no-gradle-wrapper-jar bootstrap-install'
 $BaseUrl = '__BUILDISH_BOOTSTRAP_INSTALL_BASE_URL__'
 $ManifestName = 'bootstrap-install-powershell.sha256'
 $SignatureName = 'bootstrap-install-powershell.sha256.asc'
+$ExpectedManifestSha256 = '__BUILDISH_BOOTSTRAP_INSTALL_MANIFEST_SHA256__'
 $Fingerprint = '__BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_FINGERPRINT__'
 $TrustedPublicKey = @'
 __BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_PUBLIC_KEY__
@@ -244,6 +245,10 @@ function Get-ManifestChecksum {
 $bootstrapTempDirectory = $null
 
 try {
+  if ($ExpectedManifestSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'Pinned release manifest SHA-256 must be exactly 64 lowercase hexadecimal characters.'
+  }
+
   $gpgCommand = Get-GpgCommand
   if ([string]::IsNullOrWhiteSpace($gpgCommand)) {
     throw "A GnuPG command ('gpg.exe' preferred, otherwise 'gpg') is required for detached-signature verification but was not found on PATH."
@@ -284,6 +289,10 @@ try {
   }
 
   Download -Path $manifestPath -Uri "$BaseUrl/$ManifestName" -Label 'Checksum manifest' -MaxBytes $MaxMetadataBytes
+  $actualManifestSha256 = Get-FileSha256 -Path $manifestPath
+  if ($actualManifestSha256 -cne $ExpectedManifestSha256) {
+    throw 'Checksum manifest did not match the release-pinned SHA-256.'
+  }
   Download -Path $signaturePath -Uri "$BaseUrl/$SignatureName" -Label 'Checksum manifest detached signature' -MaxBytes $MaxMetadataBytes
 
   Verify-Signature -ManifestPath $manifestPath -SignaturePath $signaturePath -GpgCommand $gpgCommand

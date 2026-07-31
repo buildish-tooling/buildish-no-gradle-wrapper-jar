@@ -102,6 +102,69 @@ exercise_bootstrap_missing_manifest_entry_failure() {
   assert_helper_files_absent "$project_dir"
 }
 
+# A valid signature from the release key is not enough to identify the selected
+# release. Replace the server contents with a different same-key signed payload
+# set and prove that the rendered bootstrap's manifest pin rejects the replay.
+exercise_bootstrap_cross_release_replay_failure() {
+  project_dir=$1
+  bootstrap_kind=$2
+  server_root="$project_dir-bootstrap-release"
+
+  log "exercising $bootstrap_kind bootstrap installer cross-release replay failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  prepare_bootstrap_release_fixture "$server_root" "$bootstrap_kind" complete valid
+  replace_bootstrap_fixture_with_alternate_signed_payload_set "$server_root" "$bootstrap_kind"
+
+  case "$bootstrap_kind" in
+    posix)
+      run_posix_bootstrap_installer_capture "$server_root/bootstrap-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_powershell_bootstrap_installer_capture "$server_root/bootstrap-install.ps1" "$project_dir"
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  stop_test_http_server
+  assert_last_command_failed "$bootstrap_kind bootstrap installer unexpectedly accepted a different same-key signed release payload set."
+  assert_last_output_contains 'Checksum manifest did not match the release-pinned SHA-256' "$bootstrap_kind bootstrap installer failure output did not identify the release-manifest mismatch."
+  assert_helper_files_absent "$project_dir"
+}
+
+# Release rendering is itself a trust-establishing step. A missing, malformed,
+# or noncanonical embedded digest must fail before any downloaded bytes can be
+# treated as the selected release manifest.
+exercise_bootstrap_malformed_manifest_pin_failure() {
+  project_dir=$1
+  bootstrap_kind=$2
+  server_root="$project_dir-bootstrap-release"
+
+  log "exercising $bootstrap_kind bootstrap installer malformed manifest-pin failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  prepare_bootstrap_release_fixture "$server_root" "$bootstrap_kind" complete valid malformed
+
+  case "$bootstrap_kind" in
+    posix)
+      run_posix_bootstrap_installer_capture "$server_root/bootstrap-install.sh" "$project_dir"
+      ;;
+    powershell)
+      run_powershell_bootstrap_installer_capture "$server_root/bootstrap-install.ps1" "$project_dir"
+      ;;
+    *)
+      stop_test_http_server
+      fail "unknown bootstrap kind '$bootstrap_kind'"
+      ;;
+  esac
+
+  stop_test_http_server
+  assert_last_command_failed "$bootstrap_kind bootstrap installer unexpectedly accepted a malformed release-manifest pin."
+  assert_last_output_contains 'Pinned release manifest SHA-256 must be exactly 64 lowercase hexadecimal characters' "$bootstrap_kind bootstrap installer failure output did not identify the malformed release-manifest pin."
+  assert_helper_files_absent "$project_dir"
+}
+
 # Exercise the release-style bootstrap happy path from signed localhost payloads
 # through helper installation and launcher patch verification.
 exercise_bootstrap_success() {
@@ -148,6 +211,10 @@ run_bootstrap_suite() {
   exercise_bootstrap_signature_failure "$test_root/bootstrap-signature-failure-powershell" powershell
   exercise_bootstrap_missing_manifest_entry_failure "$test_root/bootstrap-missing-entry-posix" posix
   exercise_bootstrap_missing_manifest_entry_failure "$test_root/bootstrap-missing-entry-powershell" powershell
+  exercise_bootstrap_cross_release_replay_failure "$test_root/bootstrap-cross-release-replay-posix" posix
+  exercise_bootstrap_cross_release_replay_failure "$test_root/bootstrap-cross-release-replay-powershell" powershell
+  exercise_bootstrap_malformed_manifest_pin_failure "$test_root/bootstrap-malformed-manifest-pin-posix" posix
+  exercise_bootstrap_malformed_manifest_pin_failure "$test_root/bootstrap-malformed-manifest-pin-powershell" powershell
   exercise_bootstrap_success "$test_root/bootstrap-success-posix" posix
   exercise_bootstrap_success "$test_root/bootstrap-success-powershell" powershell
 }

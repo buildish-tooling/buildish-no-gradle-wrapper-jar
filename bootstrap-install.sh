@@ -17,7 +17,7 @@
 # Tiny secure bootstrap verifier for the no-gradle-wrapper-jar installer.
 #
 # Important: the repository copy is a release template. A release step must fill in
-# the hard-coded base URL and pinned signing-key material before users execute it.
+# the hard-coded base URL, manifest digest, and pinned signing-key material before users execute it.
 # That keeps the final published script static and reviewable without reintroducing
 # runtime remote-override knobs.
 
@@ -27,6 +27,7 @@ TOOL='buildish-no-gradle-wrapper-jar bootstrap-install'
 BASE_URL='__BUILDISH_BOOTSTRAP_INSTALL_BASE_URL__'
 MANIFEST='bootstrap-install-posix.sha256'
 SIGNATURE='bootstrap-install-posix.sha256.asc'
+EXPECTED_MANIFEST_SHA256='__BUILDISH_BOOTSTRAP_INSTALL_MANIFEST_SHA256__'
 FINGERPRINT='__BUILDISH_BOOTSTRAP_INSTALL_TRUSTED_FINGERPRINT__'
 MAX_METADATA_BYTES=65536
 MAX_PAYLOAD_BYTES=262144
@@ -125,6 +126,8 @@ manifest_sha() {
 command -v gpg >/dev/null 2>&1 || die "Required command 'gpg' was not found on PATH."
 command -v mktemp >/dev/null 2>&1 || die "Required command 'mktemp' was not found on PATH."
 command -v grep >/dev/null 2>&1 || die "Required command 'grep' was not found on PATH."
+printf '%s' "$EXPECTED_MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$' ||
+  die 'Pinned release manifest SHA-256 must be exactly 64 lowercase hexadecimal characters.'
 
 TARGET_DIR='.'
 case $# in
@@ -170,6 +173,9 @@ fi
 actual_size=$(wc -c < "$manifest_path" | tr -d '[:space:]')
 [ "$actual_size" -le "$MAX_METADATA_BYTES" ] ||
   die "Checksum manifest exceeded the maximum allowed size of ${MAX_METADATA_BYTES} bytes."
+actual_manifest_sha256=$(sha256_file "$manifest_path")
+[ "$actual_manifest_sha256" = "$EXPECTED_MANIFEST_SHA256" ] ||
+  die 'Checksum manifest did not match the release-pinned SHA-256.'
 
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL --output "$signature_path" "$BASE_URL/$SIGNATURE" || die "Unable to download checksum manifest detached signature from '$BASE_URL/$SIGNATURE'."

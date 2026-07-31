@@ -69,7 +69,7 @@ Caller expectations:
 
 - The developer, release engineer, or CI job running an installed `gradlew` / `gradlew.bat` is trusted to execute the target project's Gradle build. *(documented)*
 - The installer operator is trusted to choose a trustworthy `--trusted-source-dir`; this parameter is not safe for untrusted user control. *(documented)*
-- A release-rendered bootstrap user is not expected to trust the network payload before the bootstrap verifier checks signed manifests and payload checksums. *(documented)*
+- A release-rendered bootstrap user is not expected to trust the network payload before the bootstrap verifier checks the release-pinned manifest digest, signed manifest, and payload checksums. *(documented)*
 - A caller who uses `unsafe-dev-install.*` is explicitly accepting unverified remote code execution from the development branch. *(documented)*
 - A network peer serving Gradle metadata, signatures, or JAR bytes is untrusted until artifacts satisfy the helper's validation steps. *(documented)*
 
@@ -80,7 +80,7 @@ Component-family table:
 | Runtime POSIX helper | `buildish-no-gradle-wrapper-jar.sh`, sourced by `gradlew` | Reads wrapper properties and cache files; downloads checksum, signature, and JAR; writes cache files; invokes `gpg`; emits stderr; prepends Gradle init-script args | Yes |
 | Runtime Windows helper | `buildish-no-gradle-wrapper-jar.ps1`, invoked by `gradlew.bat` | Reads wrapper properties and cache files; downloads checksum, signature, and JAR; writes cache files; invokes native Windows `gpg.exe`; emits command fragment to stdout and errors to stderr | Yes |
 | Local-copy installers | `install.sh`, `install.ps1` | Reads trusted source directory; copies helper files; removes wrapper JAR; patches launchers; edits `.gitignore`; rejects symlink/reparse-point targets | Yes |
-| Release bootstrap templates | `bootstrap-install.sh`, `bootstrap-install.ps1` | Download release payloads and signed manifests; verify pinned signing key and checksums; hand off to installer via `--trusted-source-dir` | Yes, for template behavior and release-rendered intended behavior |
+| Release bootstrap templates | `bootstrap-install.sh`, `bootstrap-install.ps1` | Download release payloads and signed manifests; verify the release-pinned manifest digest, pinned signing key, and payload checksums; hand off to installer via `--trusted-source-dir` | Yes, for template behavior and release-rendered intended behavior |
 | Unsafe development installers | `unsafe-dev-install.sh`, `unsafe-dev-install.ps1` | Download current-branch helper payloads without verification; execute installer; refuse common CI environments; support remote base URL override | In model only as intentionally unsafe / disclaimed behavior |
 | Gradle init script | `buildish-no-gradle-wrapper-jar.init.gradle.kts` | Hooks Gradle `Wrapper` task; preserves the reviewed wrapper-JAR pin; reads/writes generated launchers; warns on version changes and missing `distributionSha256Sum` | Yes |
 | Site/docs/security assessment | `site/`, `docs/`, `SECURITY-ASSESSMENT.md`, `SECURITY.md` | Documentation only | Yes, as security contract and operator guidance |
@@ -134,11 +134,12 @@ Installer data flow:
 
 Bootstrap data flow:
 
-1. A release-rendered bootstrap script downloads the platform payload set, checksum manifest, and detached manifest signature. *(documented)*
+1. A release-rendered bootstrap script downloads the platform payload set and checksum manifest. *(documented)*
 2. It checks strict byte limits for payloads and metadata. *(documented)*
-3. It verifies the pinned signing-key fingerprint/key material and detached manifest signature in an isolated GPG home. *(documented)*
-4. It verifies each downloaded payload against the signed manifest. *(documented)*
-5. It invokes the local installer with `--trusted-source-dir` pointing at the verified payload directory. *(documented)*
+3. It requires the downloaded manifest to match the exact SHA-256 embedded during release rendering. *(documented)*
+4. It downloads the detached manifest signature and verifies the pinned signing-key fingerprint/key material and signature in an isolated GPG home. *(documented)*
+5. It verifies each downloaded payload against the release-selected signed manifest. *(documented)*
+6. It invokes the local installer with `--trusted-source-dir` pointing at the verified payload directory. *(documented)*
 
 Reachability preconditions:
 
@@ -198,8 +199,8 @@ No-surprise side effects:
 | --- | --- | --- | --- |
 | `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS` | `60` seconds in PowerShell helper | Changes Windows helper network timeout. Invalid or non-positive values fail. Larger values extend time before availability failure. | Supported runtime configuration; production default appears intended. *(documented)* |
 | `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` | Buildish `main` branch raw URL | Changes the remote source for unsafe development installers. This can redirect blind-trust execution. | Development-only unsafe escape hatch; not for CI, automation, or secrets. *(documented)* |
-| Checked-in `bootstrap-install.*` placeholders | Placeholder URL/key material with hard fail | Repository templates intentionally fail closed until release rendering substitutes immutable URLs and signing trust material. | Template copies are not intended for direct execution. *(documented)* |
-| Release-rendered `bootstrap-install.*` | Not yet operationally published in this repository copy | Establishes verified remote installer delivery if rendered with pinned release URL and signing key material. | Planned/hardened path; publication is remaining release work. *(documented)* |
+| Checked-in `bootstrap-install.*` placeholders | Placeholder URL/manifest-digest/key material with hard fail | Repository templates intentionally fail closed until release rendering substitutes immutable URLs, the exact manifest digest, and signing trust material. | Template copies are not intended for direct execution. *(documented)* |
+| Release-rendered `bootstrap-install.*` | Not yet operationally published in this repository copy | Establishes verified remote installer delivery if rendered with pinned release URL, exact signed-manifest digest, and signing key material. | Planned/hardened path; publication is remaining release work. *(documented)* |
 | Native Windows GPG vs Git-for-Windows GPG | Native Windows GPG required | Git-for-Windows GPG is rejected; without native GPG, Windows helper verification fails. | Required for Windows `gradlew.bat`. *(documented)* |
 | Gradle wrapper `distributionSha256Sum` | Target-project dependent | Missing value weakens Gradle distribution ZIP pinning, but not wrapper-JAR verification. The init script warns if absent. | Caller responsibility; warning only. *(documented)* |
 | Buildish wrapper JAR `buildishWrapperJarSha256Sum` | Required project-owned lowercase SHA-256 | Binds the requested Gradle version to the exact accepted wrapper JAR. Missing, duplicate, malformed, or mismatched values fail closed. | Required reviewed project configuration. *(documented)* |
@@ -233,8 +234,8 @@ Per-parameter trust table:
 | `install.sh` / `install.ps1` | `--trusted-source-dir` | No; explicitly trusted caller input | Point only to reviewed local copy or verified bootstrap payload directory |
 | `install.sh` / `install.ps1` | Target project directory | Trusted operator chooses target, but target files may be attacker-influenced in local-collaboration scenarios | Run only in checkouts where modifying Gradle launchers is intended |
 | `install.sh` / `install.ps1` | Existing launcher contents | Partially; generated by Gradle or edited by project maintainers | Unsupported shapes fail; review nonstandard launchers before install |
-| `bootstrap-install.sh` / `bootstrap-install.ps1` | Release base URL and signing material | No at runtime in release-rendered scripts | Release process must render correct immutable URLs and pinned key material before signing/publishing |
-| `bootstrap-install.sh` / `bootstrap-install.ps1` | Downloaded payload files, manifests, signatures | Yes | Bootstrap verifies manifest signature and payload checksums before handoff |
+| `bootstrap-install.sh` / `bootstrap-install.ps1` | Release base URL, exact manifest SHA-256, and signing material | No at runtime in release-rendered scripts | Release process must render correct immutable URLs, selected manifest digest, and pinned key material before signing/publishing |
+| `bootstrap-install.sh` / `bootstrap-install.ps1` | Downloaded payload files, manifests, signatures | Yes | Bootstrap verifies the release-pinned manifest digest, manifest signature, and payload checksums before handoff |
 | `unsafe-dev-install.sh` / `unsafe-dev-install.ps1` | `--yes-i-know-this-is-unsafe` | Trusted user acknowledgement | Do not use unless blind-trust development flow is intended |
 | `unsafe-dev-install.sh` / `unsafe-dev-install.ps1` | `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` | Yes if environment is attacker-controlled | Do not use unsafe installers in untrusted or secret-bearing environments |
 | `unsafe-dev-install.sh` / `unsafe-dev-install.ps1` | Downloaded current-branch payloads | Yes | No validation is provided by design; do not use as secure path |
@@ -290,7 +291,7 @@ Attacker goals:
 | Installer-managed target/source paths reject symlink/reparse-point indirection | Installer runs on supported OS and managed paths are ordinary files | Installer follows link and overwrites unexpected file | Security-critical | documented |
 | Installer copies helper payloads only from `--trusted-source-dir`, never by fetching network content itself | Caller treats `--trusted-source-dir` as trusted | Installer downloads unverified remote helper payloads | Security-critical | documented |
 | Bootstrap templates fail closed while checked-in placeholders remain unreplaced | Repository template is run directly | Placeholder bootstrap downloads from attacker-controlled default or proceeds without pinned key | Security-critical | documented |
-| Release-rendered bootstrap verifies a signed payload manifest and payload checksums before invoking installer | Release process renders immutable URLs and pinned key material correctly | Tampered release payload executes before verification | Security-critical | documented |
+| Release-rendered bootstrap verifies the exact release-pinned manifest digest, its detached signature, and payload checksums before invoking installer | Release process renders immutable URLs, exact manifest SHA-256, and pinned key material correctly | Tampered or replayed release payload executes before verification | Security-critical | documented |
 | Unsafe development installers require explicit acknowledgement | User invokes unsafe script | Accidental execution without `--yes-i-know-this-is-unsafe` | Hardening / misuse prevention | documented |
 | Unsafe development installers refuse common CI markers | CI marker environment is present and not set to a false value | Unsafe current-branch code executes in CI despite marker | Hardening / misuse prevention | documented |
 | Windows helper rejects Git-for-Windows GPG for batch launcher verification | Running on Windows and only unsupported Git GPG is found | Verification uses unsupported MSYS-flavored GPG path behavior | Security-critical | documented |
@@ -355,7 +356,7 @@ Well-known attack classes left to callers/operators:
 - Configure `distributionSha256Sum` for the Gradle distribution ZIP where distribution ZIP authenticity matters. *(documented)*
 - Commit exactly one reviewed `buildishWrapperJarSha256Sum` and update it in the same change as `distributionUrl`. *(documented)*
 - Treat checksum/signature mismatch errors as security failures unless independently explained. *(documented)*
-- Use release-rendered `bootstrap-install.*` scripts only after release automation has filled real URLs and pinned signing-key material. *(documented)*
+- Use release-rendered `bootstrap-install.*` scripts only after release automation has filled real URLs, exact manifest SHA-256 values, and pinned signing-key material. *(documented)*
 - Do not use `unsafe-dev-install.*` in CI, automation, or environments with secrets. *(documented)*
 - Review nonstandard or newly generated launcher shapes when installer/init patching fails closed. *(documented)*
 - Keep host tools such as shell, PowerShell, GPG, checksum utilities, JVM, and network stack trustworthy and patched. *(inferred)*
@@ -379,6 +380,7 @@ Well-known attack classes left to callers/operators:
 - "`--trusted-source-dir` allows arbitrary code if attacker-controlled" is `OUT-OF-MODEL: trusted-input` unless the report shows the project treats that argument as untrusted. *(documented)*
 - "`unsafe-dev-install.*` downloads unverified code" is `BY-DESIGN: property-disclaimed`; those scripts are intentionally unsafe and require acknowledgement. *(documented)*
 - "Checked-in `bootstrap-install.*` contains placeholder URLs/key material" is not executable insecure default behavior because the templates fail closed before use. *(documented)*
+- "A different validly signed release manifest can be replayed at the selected release URL" is not an accepted-payload path when the rendered bootstrap's exact manifest SHA-256 remains intact. *(documented)*
 - "Helper downloads from the network" is not a finding unless downloaded bytes are accepted without the claimed checksum/signature validation. *(documented)*
 - "The helper does not verify the Gradle distribution ZIP" is `BY-DESIGN: property-disclaimed`; the init script warns and downstream projects must configure `distributionSha256Sum`. *(documented)*
 - "GPG uses the user's keyring" is not a finding for runtime helper verification because it creates an isolated temporary GPG home and disables auto key retrieval. *(documented)*
@@ -393,7 +395,7 @@ Revise this model when any of these occur:
 - The helper accepts new URL schemes, mirrors, version formats, or artifact sources. *(inferred)*
 - The project starts verifying Gradle distribution ZIPs directly rather than only warning on missing `distributionSha256Sum`. *(inferred)*
 - Release-rendered bootstrap scripts become operationally published with real
-  Buildish signing-key material. *(documented)*
+  manifest digests and Buildish signing-key material. *(documented)*
 - The unsafe development installer behavior, acknowledgement gate, CI refusal, or base URL override changes. *(inferred)*
 - Default size limits, timeout behavior, GPG trust roots, or supported launcher anchors change. *(inferred)*
 - Tests, fixtures, generated outputs, or release tooling are promoted into an end-user runtime surface. *(inferred)*
