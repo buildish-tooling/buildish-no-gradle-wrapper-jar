@@ -175,27 +175,24 @@ raise SystemExit(0 if actual_count == expected_count else 1)
 PY
 }
 
-# Source SDKMAN lazily so the suite can find Gradle in clean CI environments as
-# well as in developer shells that already initialized SDKMAN.
-source_sdkman_gradle() {
-  if [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ] && ! command -v sdk >/dev/null 2>&1; then
-    set +u
-    . "$HOME/.sdkman/bin/sdkman-init.sh"
-    set -u
-  fi
-  if command -v gradle >/dev/null 2>&1; then
+# Initialize SDKMAN only for explicit historical-version exercises. Ordinary
+# checks honor the caller's PATH and never execute user startup logic.
+source_sdkman_environment() {
+  if command -v sdk >/dev/null 2>&1; then
     return 0
   fi
-  [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ] || fail "gradle is not on PATH and SDKMAN init script was not found."
-  command -v gradle >/dev/null 2>&1 || fail 'gradle is still not available on PATH after sourcing SDKMAN.'
+  [ -s "$HOME/.sdkman/bin/sdkman-init.sh" ] || fail 'SDKMAN init script was not found for the requested version exercise.'
+  set +u
+  . "$HOME/.sdkman/bin/sdkman-init.sh"
+  set -u
+  command -v sdk >/dev/null 2>&1 || fail 'SDKMAN is not available after sourcing its init script.'
 }
 
 # Pin the Gradle version used for fixture bootstrap when a scenario needs an
 # older launcher shape than the default environment provides.
 use_sdkman_gradle_version() {
   version=$1
-  source_sdkman_gradle
-  command -v sdk >/dev/null 2>&1 || fail 'SDKMAN is required to select the bootstrap Gradle version for the version exercise.'
+  source_sdkman_environment
   set +u
   sdk use gradle "$version" >/dev/null
   set -u
@@ -215,8 +212,7 @@ select_sdkman_java_version_for_version_exercise() {
 # known-compatible JDK instead of whatever the outer shell selected.
 use_sdkman_java_version() {
   version=$1
-  source_sdkman_gradle
-  command -v sdk >/dev/null 2>&1 || fail 'SDKMAN is required to select the Java runtime for the version exercise.'
+  source_sdkman_environment
   set +u
   sdk use java "$version" >/dev/null
   set -u
@@ -232,8 +228,8 @@ require_command() {
 # Verify the common toolchain once before starting the expensive integration
 # flow and ensure the shared build directory exists.
 require_base_commands() {
-  source_sdkman_gradle
   require_command gradle
+  require_command git
   require_command gpg
   require_command python3
   command -v sha256sum >/dev/null 2>&1 || require_command shasum

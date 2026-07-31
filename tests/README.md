@@ -45,6 +45,7 @@ If logic is generic and used by several suites, it belongs in `lib/`.
 
 Topic-oriented scenario groups.
 
+- `integration-environment.sh` covers tool-selection and CLI help contracts.
 - `integration-installer.sh` covers installer and unsafe-dev flows.
 - `integration-helper-edge.sh` covers recovery, validation, timeout, and other edge cases.
 - `integration-init-script.sh` covers init-script-specific behavior.
@@ -72,6 +73,11 @@ Common commands:
 - `bash tests/integration.sh`
 - `make check`
 - `pwsh -File tests/windows-integration.ps1`
+
+The default suite uses the Gradle executable already selected on `PATH` and
+does not source SDKMAN. The `single-version` and `version-list` modes are the
+explicit exceptions: they initialize SDKMAN to select requested historical
+Gradle versions and a compatible installed Java 17 runtime.
 
 Use the smallest useful command while iterating locally, then run the broader project check before finishing a change.
 

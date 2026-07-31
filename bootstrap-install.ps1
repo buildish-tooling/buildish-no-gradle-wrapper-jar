@@ -44,6 +44,24 @@ $MaxPayloadBytes = 256KB
 $HttpTimeoutSeconds = 60
 $OnWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 
+function Show-Usage {
+  Write-Host @'
+Usage: bootstrap-install.ps1 [target-project-directory]
+
+Download and verify a release-pinned installer payload, then install it into a
+Gradle project. The checked-in file is a fail-closed release template; only a
+release-rendered copy can perform installation.
+
+Options:
+  -h, --help  Show this help and exit without downloading.
+'@
+}
+
+if ($args.Count -ge 1 -and @('-h', '--help') -contains $args[0]) {
+  Show-Usage
+  exit 0
+}
+
 # __BUILDISH_BOOTSTRAP_INSTALL_DROP_START__
 throw 'This checked-in bootstrap-install.ps1 still contains unreplaced release placeholders. Use a release-generated bootstrap-install.ps1 or the reviewed local-copy/manual-verification flow.'
 # __BUILDISH_BOOTSTRAP_INSTALL_DROP_END__

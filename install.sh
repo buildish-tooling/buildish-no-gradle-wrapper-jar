@@ -47,6 +47,19 @@ buildish_install_warn() {
   echo "${BUILDISH_TOOL_NAME} install: $*" >&2
 }
 
+buildish_install_usage() {
+  cat <<'EOF'
+Usage: install.sh --trusted-source-dir <path> [target-project-directory]
+
+Stage reviewed helper files from a trusted local directory, patch the Gradle
+wrapper launchers, remove gradle-wrapper.jar, and update .gitignore.
+
+Options:
+  --trusted-source-dir <path>  Reviewed directory containing the helper files.
+  -h, --help                   Show this help and exit.
+EOF
+}
+
 # Command preflight used before depending on external programs.
 buildish_install_require_command() {
   command -v "$1" >/dev/null 2>&1 || buildish_install_fail "Required command '$1' was not found on PATH."
@@ -471,12 +484,14 @@ buildish_install_publish_staged_file() {
     buildish_install_fail "Unable to publish staged file to '$destination_path'."
 }
 
-buildish_install_require_command mktemp
-
 # Installer entrypoint validation and derived paths.
 # Parse --trusted-source-dir option and the optional positional target-directory argument.
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -h|--help)
+      buildish_install_usage
+      exit 0
+      ;;
     --trusted-source-dir)
       [ "$#" -ge 2 ] || buildish_install_fail '--trusted-source-dir requires a path argument.'
       BUILDISH_TRUSTED_SOURCE_DIR=$2
@@ -499,6 +514,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+buildish_install_require_command mktemp
 [ "$#" -le 1 ] || buildish_install_fail 'Expected zero or one positional argument: the target project directory.'
 TARGET_DIR=${1:-.}
 buildish_install_assert_directory "$TARGET_DIR" 'Target project directory'

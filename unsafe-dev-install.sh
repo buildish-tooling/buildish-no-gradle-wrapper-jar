@@ -26,6 +26,20 @@ die() {
   exit 1
 }
 
+usage() {
+  cat <<'EOF'
+Usage: unsafe-dev-install.sh --yes-i-know-this-is-unsafe [target-project-directory]
+
+Download and execute unverified helper files from the current development
+branch. This shortcut is unsafe and is not suitable for CI or environments
+with secrets.
+
+Options:
+  --yes-i-know-this-is-unsafe  Required acknowledgement of the execution risk.
+  -h, --help                   Show this help and exit without downloading.
+EOF
+}
+
 ci_marker() {
   for marker in CI GITHUB_ACTIONS GITLAB_CI JENKINS_URL JENKINS_HOME BUILDKITE TEAMCITY_VERSION CIRCLECI TRAVIS TF_BUILD BITBUCKET_BUILD_NUMBER APPVEYOR DRONE SYSTEM_COLLECTIONURI; do
     eval "value=\${$marker-}"
@@ -43,6 +57,13 @@ ci_marker() {
 
 # The only acceptable reason to run this script is explicit, conscious trust in
 # the current development branch contents. Make that acknowledgment mandatory.
+case ${1:-} in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
 [ "$#" -ge 1 ] ||
   die "Refusing to run without --yes-i-know-this-is-unsafe. This script downloads and executes unverified content from the current development branch and is not suitable for CI, automation, or secret-bearing environments."
 

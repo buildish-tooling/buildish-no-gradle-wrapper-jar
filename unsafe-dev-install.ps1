@@ -22,6 +22,20 @@ $DefaultBaseUrl = 'https://raw.githubusercontent.com/buildish-tooling/buildish/m
 $BaseUrl = if ([string]::IsNullOrWhiteSpace($env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL)) { $DefaultBaseUrl } else { $env:BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL }
 $Files = @('install.ps1', 'buildish-no-gradle-wrapper-jar.sh', 'buildish-no-gradle-wrapper-jar.ps1', 'buildish-no-gradle-wrapper-jar.init.gradle.kts')
 
+function Show-Usage {
+  Write-Host @'
+Usage: unsafe-dev-install.ps1 --yes-i-know-this-is-unsafe [target-project-directory]
+
+Download and execute unverified helper files from the current development
+branch. This shortcut is unsafe and is not suitable for CI or environments
+with secrets.
+
+Options:
+  --yes-i-know-this-is-unsafe  Required acknowledgement of the execution risk.
+  -h, --help                   Show this help and exit without downloading.
+'@
+}
+
 function Get-CiMarker {
   foreach ($marker in @('CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'JENKINS_URL', 'JENKINS_HOME', 'BUILDKITE', 'TEAMCITY_VERSION', 'CIRCLECI', 'TRAVIS', 'TF_BUILD', 'BITBUCKET_BUILD_NUMBER', 'APPVEYOR', 'DRONE', 'SYSTEM_COLLECTIONURI')) {
     $value = [System.Environment]::GetEnvironmentVariable($marker)
@@ -40,6 +54,11 @@ function Get-CiMarker {
   }
 
   return ''
+}
+
+if ($args.Count -ge 1 -and @('-h', '--help') -contains $args[0]) {
+  Show-Usage
+  exit 0
 }
 
 if ($args.Count -eq 0 -or $args[0] -ne '--yes-i-know-this-is-unsafe') {

@@ -16,6 +16,37 @@
 # Installer-focused scenarios for tests/integration.sh. The entrypoint sources
 # this after the shared helper libraries.
 
+# An isolated installation commit is the rollback boundary documented for
+# adopters. Reverting it must reproduce the exact pre-install Git tree.
+exercise_installer_git_revert_rollback() {
+  source_project_dir=$1
+  project_dir=$2
+  installer_kind=$3
+
+  log "exercising $installer_kind installer Git-revert rollback in '$project_dir'"
+  copy_project_fixture "$source_project_dir" "$project_dir"
+  git -C "$project_dir" init -q
+  git -C "$project_dir" add --all
+  git -C "$project_dir" -c user.name=Buildish-Test -c user.email=buildish-test@example.invalid commit -qm 'pre-install state'
+  baseline_tree=$(git -C "$project_dir" rev-parse 'HEAD^{tree}')
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_succeeded "$installer_kind installer failed while preparing the rollback scenario."
+  git -C "$project_dir" add --all
+  if git -C "$project_dir" diff --cached --quiet; then
+    fail "$installer_kind installer produced no changes for the rollback scenario."
+  fi
+  git -C "$project_dir" -c user.name=Buildish-Test -c user.email=buildish-test@example.invalid commit -qm 'install no-gradle-wrapper-jar helper'
+  installation_commit=$(git -C "$project_dir" rev-parse HEAD)
+
+  git -C "$project_dir" -c user.name=Buildish-Test -c user.email=buildish-test@example.invalid revert --no-edit "$installation_commit" >/dev/null
+  reverted_tree=$(git -C "$project_dir" rev-parse 'HEAD^{tree}')
+  [ "$reverted_tree" = "$baseline_tree" ] ||
+    fail "$installer_kind installer rollback did not reproduce the pre-install Git tree."
+  [ -z "$(git -C "$project_dir" status --porcelain)" ] ||
+    fail "$installer_kind installer rollback left uncommitted project changes."
+}
+
 # Keep the reviewed-install examples aligned with this standalone repository's
 # actual root-level installers rather than the former monorepo-only tools path.
 exercise_standalone_installation_documentation_contract() {
@@ -31,6 +62,16 @@ exercise_standalone_installation_documentation_contract() {
     fail 'reviewed-install docs do not show the standalone PowerShell installer contract.'
   grep -Fq 'buildishWrapperJarSha256Sum=<reviewed lowercase 64-character Wrapper JAR SHA-256>' "$docs_path" ||
     fail 'reviewed-install docs do not describe the required project-owned wrapper-JAR digest pin.'
+  grep -Fq 'sh install.sh --help' "$docs_path" ||
+    fail 'reviewed-install docs do not expose the non-mutating POSIX help command.'
+  grep -Fq 'powershell.exe -File .\install.ps1 --help' "$docs_path" ||
+    fail 'reviewed-install docs do not expose the Windows PowerShell help command.'
+  grep -Fq 'git revert <installation-commit>' "$docs_path" ||
+    fail 'reviewed-install docs do not show the tested Git-revert rollback contract.'
+  grep -Fq '### Cold and offline behavior' "$docs_path" ||
+    fail 'reviewed-install docs do not explain cold and offline behavior.'
+  grep -Fq '`gradlew.bat` invokes `powershell.exe` by name' "$docs_path" ||
+    fail 'reviewed-install docs do not distinguish the gradlew.bat Windows PowerShell requirement from pwsh.'
 }
 
 # Exercise the shared output normalizer itself so future assertion cleanups do
@@ -517,6 +558,9 @@ run_installer_suite() {
   exercise_installer_late_backup_rollback "$powershell_project_dir" "$test_root/posix-installer-rollback" posix
   exercise_installer_managed_ancestor_link_rejection "$powershell_project_dir" "$test_root/posix-installer-ancestor-link" posix
   exercise_installer_managed_ancestor_link_rejection "$powershell_project_dir" "$test_root/powershell-installer-ancestor-link" powershell
+  gradle_init_fixture "$test_root/installer-rollback-source"
+  exercise_installer_git_revert_rollback "$test_root/installer-rollback-source" "$test_root/posix-installer-git-rollback" posix
+  exercise_installer_git_revert_rollback "$test_root/installer-rollback-source" "$test_root/powershell-installer-git-rollback" powershell
   exercise_unsafe_dev_installer_requires_acknowledgement_failure "$test_root/posix-unsafe-dev-requires-ack" posix
   exercise_unsafe_dev_installer_requires_acknowledgement_failure "$test_root/powershell-unsafe-dev-requires-ack" powershell
   exercise_unsafe_dev_installer_ci_barrier_failure "$test_root/posix-unsafe-dev-ci-barrier" posix

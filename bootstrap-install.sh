@@ -39,6 +39,26 @@ die() {
   exit 1
 }
 
+usage() {
+  cat <<'EOF'
+Usage: bootstrap-install.sh [target-project-directory]
+
+Download and verify a release-pinned installer payload, then install it into a
+Gradle project. The checked-in file is a fail-closed release template; only a
+release-rendered copy can perform installation.
+
+Options:
+  -h, --help  Show this help and exit without downloading.
+EOF
+}
+
+case ${1:-} in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
 # __BUILDISH_BOOTSTRAP_INSTALL_DROP_START__
 die 'This checked-in bootstrap-install.sh still contains unreplaced release placeholders. Use a release-generated bootstrap-install.sh or the reviewed local-copy/manual-verification flow.'
 # __BUILDISH_BOOTSTRAP_INSTALL_DROP_END__

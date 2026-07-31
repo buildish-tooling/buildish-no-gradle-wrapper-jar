@@ -37,6 +37,24 @@ $ProgressPreference = 'SilentlyContinue'
 
 $BuildishToolName = 'buildish-no-gradle-wrapper-jar'
 
+function Show-BuildishInstallUsage {
+  Write-Host @'
+Usage: install.ps1 --trusted-source-dir <path> [target-project-directory]
+
+Stage reviewed helper files from a trusted local directory, patch the Gradle
+wrapper launchers, remove gradle-wrapper.jar, and update .gitignore.
+
+Options:
+  --trusted-source-dir <path>  Reviewed directory containing the helper files.
+  -h, --help                   Show this help and exit.
+'@
+}
+
+if ($args.Count -ge 1 -and @('-h', '--help') -contains $args[0]) {
+  Show-BuildishInstallUsage
+  exit 0
+}
+
 # Parse --trusted-source-dir option and the optional positional target-directory argument.
 $parsedTrustedSourceDirectory = ''
 $parsedPositionalArgs = [System.Collections.Generic.List[string]]::new()

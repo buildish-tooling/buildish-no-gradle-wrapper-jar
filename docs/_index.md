@@ -33,12 +33,22 @@ Before changing the project, each installer requires a reviewed wrapper-JAR dige
 The installer scripts for POSIX environments and Windows are idempotent, so safe to run multiple times.
 Re-running the installer scripts updates the helper files to the latest version.
 
+Run `sh install.sh --help` or `powershell.exe -File .\install.ps1 --help` to see
+the local install syntax without reading or changing a target project. The
+release-bootstrap and explicitly unsafe development entrypoints also support
+`-h` and `--help`; help never performs filesystem or network setup.
+
 ### Recommended reviewed-install flow
 
 Clone this component repository separately from the target Gradle project, select
 an exact commit, and review that checkout before running its installer. The
 installer copies only from the directory supplied with `--trusted-source-dir`;
 it does not establish trust in the checkout for you.
+
+Start from a clean target-project worktree and commit its current state before
+installation. The installers roll back failures they detect during publication,
+while an isolated Git commit provides the reviewable rollback boundary after a
+successful installation.
 
 ### Add the required wrapper-JAR pin
 
@@ -71,9 +81,12 @@ Run the standalone checkout's installer against the target project:
 
 ```sh
 project_dir=/path/to/gradle-project
+git -C "$project_dir" status --short
 bash "$tool_dir/install.sh" --trusted-source-dir "$tool_dir" "$project_dir"
 git -C "$project_dir" diff -- gradlew gradlew.bat gradle/ .gitignore
 (cd "$project_dir" && ./gradlew --version)
+git -C "$project_dir" add -A -- gradlew gradlew.bat gradle/ .gitignore
+git -C "$project_dir" commit -m 'Install Buildish no-gradle-wrapper-jar helper'
 ```
 
 #### Windows / PowerShell
@@ -91,16 +104,43 @@ Run the standalone checkout's installer against the target project:
 
 ```powershell
 $ProjectDirectory = 'C:\path\to\gradle-project'
+git -C $ProjectDirectory status --short
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
   "$ToolDirectory\install.ps1" --trusted-source-dir $ToolDirectory $ProjectDirectory
 git -C $ProjectDirectory diff -- gradlew gradlew.bat gradle/ .gitignore
 Push-Location $ProjectDirectory
 try { .\gradlew.bat --version } finally { Pop-Location }
+git -C $ProjectDirectory add -A -- gradlew gradlew.bat gradle/ .gitignore
+git -C $ProjectDirectory commit -m 'Install Buildish no-gradle-wrapper-jar helper'
 ```
 
 If the component is intentionally vendored inside a larger source tree, set
 `tool_dir` / `$ToolDirectory` to that reviewed directory instead. The installer
 does not require a particular parent-directory layout.
+
+### Review, commit, and rollback
+
+The installation diff should be limited to:
+
+- the required `buildishWrapperJarSha256Sum` in `gradle-wrapper.properties`;
+- three new `gradle/buildish-no-gradle-wrapper-jar.*` helper files;
+- helper invocation changes in `gradlew` and `gradlew.bat`;
+- retained metadata patterns in `.gitignore`; and
+- deletion of `gradle/wrapper/gradle-wrapper.jar`.
+
+Investigate any other change before committing. Keep the installation in its
+own commit, as shown above. To uninstall or roll back later, revert that commit:
+
+```sh
+git revert <installation-commit>
+```
+
+This restores the exact pre-install tracked tree, including the original
+launchers, `.gitignore`, and wrapper JAR. Both installer implementations verify
+this round trip in the integration suite. If installation changes are still
+uncommitted, inspect them with `git diff` and use your normal Git restoration
+workflow; do not delete the whole `gradle/` directory because it also contains
+the project's wrapper configuration.
 
 ### Unsafe development shortcut
 
@@ -175,10 +215,10 @@ The helpers are standalone on purpose. They do not import this repository's Type
 
 ## Script code vs. binary executable
 
-The scripts in this repository are written in POSIX shell and Windows PowerShell not just for maximum
-portability, but to explicitly enable inspection and verification.
-They do not require any external dependencies beyond a POSIX shell and `gpg` on
-POSIX, or PowerShell and a native Windows `gpg.exe` on Windows.
+The scripts in this repository are written in POSIX shell and Windows PowerShell
+to keep inspection and verification straightforward. They still depend on the
+host tools and runtime APIs listed below; they are source scripts, not
+dependency-free executables.
 
 ## What the helpers do
 
@@ -269,6 +309,21 @@ shape before patching it automatically.
 
 ## Required tools
 
+| Scenario | Required environment | Network behavior |
+| --- | --- | --- |
+| POSIX local install | POSIX shell, `mktemp`, and common file/text utilities | No network access; copies from `--trusted-source-dir` |
+| Windows local install | Windows PowerShell or PowerShell 7 | No network access; copies from `--trusted-source-dir` |
+| POSIX `gradlew` runtime | POSIX shell, `curl`, `gpg`, `mktemp`, and SHA-256 utilities | Needed when verified wrapper files are not already cached |
+| Windows `gradlew.bat` runtime | Windows PowerShell (`powershell.exe`), native Windows `gpg.exe`, and .NET hashing/HTTP APIs | Needed when verified wrapper files are not already cached |
+| Release bootstrap | Runtime platform tools; POSIX also needs `dd`, `mkfifo`, and `curl` or `wget` | Always required to acquire the release payload |
+| POSIX-hosted integration tests | Bash, Gradle on `PATH`, PowerShell 7 (`pwsh`), GnuPG, Python 3, Git, checksum tools, and upstream access | Required |
+| Native Windows integration tests | `pwsh`, `cmd.exe`, `powershell.exe`, native Windows GnuPG, Git, and upstream access | Required |
+| Complete `make check` | Integration-test tools plus Make, Java 21+, `tar`, and SHA-512 support for RAT | Required on a clean first run |
+
+> [!IMPORTANT]
+> `gradlew.bat` invokes `powershell.exe` by name. Installing PowerShell 7
+> (`pwsh`) alone does not satisfy that runtime requirement.
+
 ### POSIX helper
 
 - POSIX shell
@@ -282,10 +337,24 @@ unknown-length responses at the documented byte limit. It supports either `curl`
 
 ### PowerShell helper
 
-- Windows PowerShell / PowerShell
+- Windows PowerShell (`powershell.exe`) for `gradlew.bat`
 - native Windows `gpg.exe`
 - `System.Net.Http`
 - `Get-FileHash`
+
+### Cold and offline behavior
+
+The reviewed local-copy installers work offline because they only copy files
+from `--trusted-source-dir`. Release bootstraps and unsafe development
+installers always require network access.
+
+The first helper-backed wrapper run normally downloads checksum/signature
+metadata and `gradle-wrapper.jar`. Later runs can work without network access
+when all three retained files are present and still pass the project pin,
+checksum, and signature checks. The required host commands must still be
+installed. Missing, stale, corrupt, or wrong-version cache files require network
+recovery and fail closed while offline. Gradle may separately require its
+distribution ZIP unless that ZIP is already present in `GRADLE_USER_HOME`.
 
 > [!IMPORTANT]
 > `gradlew.bat` verification requires a native Windows GnuPG build. The helper intentionally rejects
@@ -309,11 +378,11 @@ Before copying or patching anything, add and review the required
 If you use the automatic installer above, it performs this copy step and the launcher/
 `.gitignore` updates for you.
 
-Copy:
+Copy from the reviewed component checkout:
 
-- `tools/buildish-no-gradle-wrapper-jar/buildish-no-gradle-wrapper-jar.sh` -> `gradle/buildish-no-gradle-wrapper-jar.sh`
-- `tools/buildish-no-gradle-wrapper-jar/buildish-no-gradle-wrapper-jar.ps1` -> `gradle/buildish-no-gradle-wrapper-jar.ps1`
-- `tools/buildish-no-gradle-wrapper-jar/buildish-no-gradle-wrapper-jar.init.gradle.kts` -> `gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts`
+- `buildish-no-gradle-wrapper-jar.sh` -> `gradle/buildish-no-gradle-wrapper-jar.sh`
+- `buildish-no-gradle-wrapper-jar.ps1` -> `gradle/buildish-no-gradle-wrapper-jar.ps1`
+- `buildish-no-gradle-wrapper-jar.init.gradle.kts` -> `gradle/buildish-no-gradle-wrapper-jar.init.gradle.kts`
 
 ### 2. Patch `gradlew`
 
@@ -364,9 +433,15 @@ The integration tests expect these commands to be available on `PATH`:
 - `gradle`
 - `pwsh`
 - `gpg`
+- `python3`
+- `git`
+- `curl`
+- either `sha256sum` or `shasum`
 
 They also need network access so the helper can fetch the wrapper JAR, checksum, and detached
-signature from the upstream Gradle endpoints.
+signature from the upstream Gradle endpoints. The complete check additionally
+uses Make, Java 21+, `tar`, and SHA-512 support as documented in
+[`CONTRIBUTING.md`](https://github.com/buildish-tooling/buildish-no-gradle-wrapper-jar/blob/main/CONTRIBUTING.md).
 
 ## Customization boundaries
 

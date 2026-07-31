@@ -50,6 +50,8 @@ BOOTSTRAP_TEST_PUBLIC_KEY_PATH=''
 . "$TESTS_DIR/lib/integration-common.sh"
 # shellcheck source=tests/lib/integration-fixtures.sh
 . "$TESTS_DIR/lib/integration-fixtures.sh"
+# shellcheck source=tests/suites/integration-environment.sh
+. "$TESTS_DIR/suites/integration-environment.sh"
 # shellcheck source=tests/suites/integration-installer.sh
 . "$TESTS_DIR/suites/integration-installer.sh"
 # shellcheck source=tests/suites/integration-helper-edge.sh
@@ -68,6 +70,7 @@ run_default_integration_suite() {
   trap 'stop_test_http_server; rm -rf "$test_root"' EXIT HUP INT TERM
 
   log "starting default integration suite (test_root='$test_root')"
+  run_environment_contract_suite "$test_root/environment-contracts"
   run_installer_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
   run_helper_edge_case_suite "$test_root" "$test_root/posix-installer" "$test_root/powershell-installer"
   run_init_script_focused_suite "$test_root"
