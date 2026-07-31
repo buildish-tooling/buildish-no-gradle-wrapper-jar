@@ -28,7 +28,7 @@ version N is triaged against the model shipped with N, not against later `main` 
 
 Implementation review baseline: `2748f332c2b1de75f8a42b18ee71fcb69e63ab2a`. *(maintainer)*
 
-Security-sensitive content digest: `6fdd44750f81c8c0226e2b546b15c67fe2529b3c`. The digest covers the paths declared in
+Security-sensitive content digest: `9199325469f927f5918fa1022926ef023d761946`. The digest covers the paths declared in
 `scripts/security-model-inputs.txt` and is enforced by `make security-model-check`. *(documented)*
 
 Last maintainer review: 2026-07-31. *(maintainer)*

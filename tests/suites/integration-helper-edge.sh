@@ -294,7 +294,7 @@ exercise_helper_missing_gpg_failure() {
       helper_path=$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1
       run_and_capture env PATH="$restricted_path" APP_HOME="$project_dir" "$powershell_command" -NoLogo -NoProfile -File "$helper_path"
       assert_last_command_failed 'PowerShell helper unexpectedly succeeded without GPG.'
-      assert_last_output_contains "A GnuPG command ('gpg.exe' preferred, otherwise 'gpg') is required" 'PowerShell helper missing-GPG failure did not identify the unavailable command.'
+      assert_last_output_contains "A GnuPG command ('gpg') is required" 'Non-Windows PowerShell helper missing-GPG failure did not identify the unavailable command.'
       ;;
     *)
       fail "unknown helper kind '$helper_kind'"
@@ -302,6 +302,28 @@ exercise_helper_missing_gpg_failure() {
   esac
 
   diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "$helper_kind helper changed the project while failing closed without GPG."
+}
+
+# Non-Windows PowerShell must resolve the conventional `gpg` name directly,
+# even when an executable named `gpg.exe` is available beside it on PATH.
+exercise_powershell_helper_non_windows_gpg_resolution() {
+  project_dir=$1
+  restricted_path=$project_dir.non-windows-gpg-path
+  powershell_command=$(pwsh -NoLogo -NoProfile -Command '(Get-Process -Id $PID).Path')
+  gpg_command=$(command -v gpg)
+
+  log "exercising non-Windows PowerShell GPG resolution in '$project_dir'"
+  [ -n "$powershell_command" ] || fail 'GPG-resolution test could not resolve the PowerShell executable path.'
+  [ -n "$gpg_command" ] || fail 'GPG-resolution test requires gpg on PATH.'
+  [ ! -e "$restricted_path" ] || fail "GPG-resolution test PATH already exists at '$restricted_path'."
+  mkdir "$restricted_path"
+  ln -s "$gpg_command" "$restricted_path/gpg"
+  printf '#!/bin/sh\nexit 97\n' > "$restricted_path/gpg.exe"
+  chmod +x "$restricted_path/gpg.exe"
+
+  helper_path=$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1
+  run_and_capture env PATH="$restricted_path" APP_HOME="$project_dir" "$powershell_command" -NoLogo -NoProfile -File "$helper_path"
+  assert_last_command_succeeded 'Non-Windows PowerShell helper selected gpg.exe instead of gpg.'
 }
 
 # POSIX external-tool prerequisites must be checked before any cached artifact
@@ -846,6 +868,9 @@ run_helper_edge_case_suite() {
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-gpg"
   exercise_helper_missing_gpg_failure "$scenario_root/powershell-missing-gpg" powershell
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-non-windows-gpg-resolution"
+  exercise_powershell_helper_non_windows_gpg_resolution "$scenario_root/powershell-non-windows-gpg-resolution"
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-properties"
   exercise_powershell_helper_failure_stream_protocol "$scenario_root/powershell-missing-properties"

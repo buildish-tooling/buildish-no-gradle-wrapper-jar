@@ -748,7 +748,10 @@ try {
   # helper must fail closed rather than silently trusting downloaded bytes.
   $GpgCommand = Get-BuildishNoGradleWrapperJarGpgCommandPath
   if ([string]::IsNullOrWhiteSpace($GpgCommand)) {
-    throw "A GnuPG command ('gpg.exe' preferred, otherwise 'gpg') is required for Gradle wrapper detached-signature verification but was not found on PATH."
+    if ($BuildishIsWindows) {
+      throw "A GnuPG command ('gpg.exe' preferred, otherwise 'gpg') is required for Gradle wrapper detached-signature verification but was not found on PATH."
+    }
+    throw "A GnuPG command ('gpg') is required for Gradle wrapper detached-signature verification but was not found on PATH."
   }
 
   # All paths are project-local and derived from the existing Gradle launcher
