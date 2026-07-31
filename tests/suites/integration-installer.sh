@@ -339,6 +339,29 @@ exercise_installer_managed_ancestor_link_rejection() {
   diff -r "$external_snapshot_dir" "$external_gradle_dir" >/dev/null || fail "$installer_kind installer modified files through a symlinked Gradle directory."
 }
 
+# A managed destination that is a directory must be rejected during preflight.
+# Prove that neither installer removes the directory or mutates any other
+# project file while reporting the type collision.
+exercise_installer_managed_file_directory_rejection() {
+  source_project_dir=$1
+  project_dir=$2
+  installer_kind=$3
+  managed_path=$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1
+  snapshot_dir=$project_dir.before-install
+
+  log "exercising $installer_kind installer managed-file directory rejection in '$project_dir'"
+  copy_project_fixture "$source_project_dir" "$project_dir"
+  [ -f "$managed_path" ] || fail "$installer_kind directory-collision fixture is missing the installed PowerShell helper."
+  rm -f "$managed_path"
+  mkdir "$managed_path"
+  copy_project_fixture "$project_dir" "$snapshot_dir"
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_failed "$installer_kind installer unexpectedly replaced a managed-file directory."
+  assert_last_output_contains 'PowerShell helper script must be a regular file' "$installer_kind installer failure did not identify the managed-file directory collision."
+  diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "$installer_kind installer changed the project despite rejecting a managed-file directory."
+}
+
 # Exercise the unsafe-dev installer acknowledgement guard so the dangerous flow
 # cannot run without an explicit opt-in flag.
 exercise_unsafe_dev_installer_requires_acknowledgement_failure() {
@@ -489,18 +512,6 @@ run_powershell_installer_flow() {
   assert_metadata_for_version "$project_dir" "$installed_version"
 }
 
-# Reserved placeholder for installer-side download size checks so future work
-# can slot into the suite without reshaping the surrounding runners.
-exercise_installer_oversized_tool_download_failure() {
-  :
-}
-
-# Reserved placeholder for installer-side timeout coverage once the installer is
-# taught to fetch tool files through a timeout-controlled path.
-exercise_powershell_installer_download_timeout_failure() {
-  :
-}
-
 # Run the installer-centric portion of the default integration suite, including
 # the shared output-normalization contract, both installers, and unsafe-dev
 # guardrail checks.
@@ -529,6 +540,8 @@ run_installer_suite() {
   exercise_installer_late_backup_rollback "$powershell_project_dir" "$test_root/posix-installer-rollback" posix
   exercise_installer_managed_ancestor_link_rejection "$powershell_project_dir" "$test_root/posix-installer-ancestor-link" posix
   exercise_installer_managed_ancestor_link_rejection "$powershell_project_dir" "$test_root/powershell-installer-ancestor-link" powershell
+  exercise_installer_managed_file_directory_rejection "$powershell_project_dir" "$test_root/posix-installer-directory-collision" posix
+  exercise_installer_managed_file_directory_rejection "$powershell_project_dir" "$test_root/powershell-installer-directory-collision" powershell
   gradle_init_fixture "$test_root/installer-rollback-source"
   exercise_installer_git_revert_rollback "$test_root/installer-rollback-source" "$test_root/posix-installer-git-rollback" posix
   exercise_installer_git_revert_rollback "$test_root/installer-rollback-source" "$test_root/powershell-installer-git-rollback" powershell
