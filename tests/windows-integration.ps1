@@ -77,21 +77,47 @@ function Get-BuildishWrapperVersion {
   return $distributionMatch.Groups[1].Value
 }
 
-function Set-BuildishWrapperDistributionUrl {
+function Get-BuildishWrapperJarPin {
+  param([string]$ProjectDirectory)
+
+  $propertiesPath = Join-Path -Path $ProjectDirectory -ChildPath 'gradle\wrapper\gradle-wrapper.properties'
+  $pinLine = (Select-String -Path $propertiesPath -CaseSensitive -Pattern '^buildishWrapperJarSha256Sum=' | Select-Object -First 1).Line
+  if ([string]::IsNullOrWhiteSpace($pinLine)) {
+    throw "Unable to read buildishWrapperJarSha256Sum from '$propertiesPath'."
+  }
+  return $pinLine.Substring('buildishWrapperJarSha256Sum='.Length)
+}
+
+function Set-BuildishWrapperJarPin {
   param(
     [string]$ProjectDirectory,
-    [string]$GradleVersion
+    [string]$Sha256
   )
 
   $propertiesPath = Join-Path -Path $ProjectDirectory -ChildPath 'gradle\wrapper\gradle-wrapper.properties'
+  $found = $false
   $updatedLines = foreach ($line in Get-Content -LiteralPath $propertiesPath) {
-    if ($line.StartsWith('distributionUrl=')) {
-      "distributionUrl=https\://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip"
+    if ($line.StartsWith('buildishWrapperJarSha256Sum=')) {
+      $found = $true
+      "buildishWrapperJarSha256Sum=$Sha256"
     } else {
       $line
     }
   }
+  if (-not $found) {
+    $updatedLines += "buildishWrapperJarSha256Sum=$Sha256"
+  }
   [System.IO.File]::WriteAllText($propertiesPath, (($updatedLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Get-BuildishPublishedWrapperJarChecksum {
+  param([string]$GradleVersion)
+
+  $checksum = ([string](Invoke-RestMethod -Uri "https://services.gradle.org/distributions/gradle-$GradleVersion-wrapper.jar.sha256")).Trim().ToLowerInvariant()
+  if ($checksum -cnotmatch '^[0-9a-f]{64}$') {
+    throw "Gradle $GradleVersion returned a malformed Wrapper JAR checksum."
+  }
+  return $checksum
 }
 
 function Assert-BuildishMetadataForVersion {
@@ -135,6 +161,7 @@ try {
   Invoke-BuildishWithGradleUserHome -ProjectDirectory $projectDirectory -Label 'gradle init' -Command {
     & gradle -p $projectDirectory init --dsl groovy --type java-library --use-defaults --no-daemon
   }
+  Set-BuildishWrapperJarPin -ProjectDirectory $projectDirectory -Sha256 (Get-BuildishPublishedWrapperJarChecksum -GradleVersion (Get-BuildishWrapperVersion -ProjectDirectory $projectDirectory))
 
   Write-BuildishWindowsTestLog "installing helper into '$projectDirectory'"
   Invoke-BuildishExternal -Label 'install.ps1' -Command {
@@ -154,15 +181,44 @@ try {
   $installedVersion = Get-BuildishWrapperVersion -ProjectDirectory $projectDirectory
   Assert-BuildishMetadataForVersion -ProjectDirectory $projectDirectory -GradleVersion $installedVersion
 
-  Write-BuildishWindowsTestLog "running batch launcher in '$projectDirectory' for Gradle '$TwoSegmentGradleVersion'"
-  Set-BuildishWrapperDistributionUrl -ProjectDirectory $projectDirectory -GradleVersion $TwoSegmentGradleVersion
+  $junctionProjectDirectory = Join-Path -Path $testRoot -ChildPath 'junction rejection project'
+  $externalGradleDirectory = Join-Path -Path $testRoot -ChildPath 'junction external gradle'
+  Copy-Item -LiteralPath $projectDirectory -Destination $junctionProjectDirectory -Recurse
+  Move-Item -LiteralPath (Join-Path -Path $junctionProjectDirectory -ChildPath 'gradle') -Destination $externalGradleDirectory
+  [void](New-Item -ItemType Junction -Path (Join-Path -Path $junctionProjectDirectory -ChildPath 'gradle') -Target $externalGradleDirectory)
+  $externalWrapperJarPath = Join-Path -Path $externalGradleDirectory -ChildPath 'wrapper\gradle-wrapper.jar'
+  $externalWrapperJarHash = (Get-FileHash -LiteralPath $externalWrapperJarPath -Algorithm SHA256).Hash
+
+  Write-BuildishWindowsTestLog "rejecting junction-backed Gradle directory in '$junctionProjectDirectory'"
+  $junctionOutput = & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --trusted-source-dir $ToolDirectory $junctionProjectDirectory 2>&1 | Out-String
+  $junctionExitCode = $LASTEXITCODE
+  if ($junctionExitCode -eq 0) {
+    throw 'install.ps1 unexpectedly followed a junction-backed Gradle directory.'
+  }
+  if (-not $junctionOutput.Contains('Gradle directory must not be a symbolic link')) {
+    throw "install.ps1 junction rejection did not identify the managed reparse point. Output: $junctionOutput"
+  }
+  if ((Get-FileHash -LiteralPath $externalWrapperJarPath -Algorithm SHA256).Hash -ne $externalWrapperJarHash) {
+    throw 'install.ps1 changed the external wrapper JAR through a junction-backed Gradle directory.'
+  }
+
+  Write-BuildishWindowsTestLog "updating batch launcher in '$projectDirectory' to Gradle '$TwoSegmentGradleVersion'"
+  $previousWrapperJarPin = Get-BuildishWrapperJarPin -ProjectDirectory $projectDirectory
+  Invoke-BuildishWithGradleUserHome -ProjectDirectory $projectDirectory -Label 'cmd gradlew.bat wrapper upgrade' -Command {
+    Push-Location $projectDirectory
+    try { & cmd.exe /d /c "gradlew.bat --no-daemon wrapper --gradle-version $TwoSegmentGradleVersion --distribution-type bin" } finally { Pop-Location }
+  }
+  if ((Get-BuildishWrapperJarPin -ProjectDirectory $projectDirectory) -ne $previousWrapperJarPin) {
+    throw 'Gradle init script did not preserve buildishWrapperJarSha256Sum during wrapper property regeneration.'
+  }
+  Set-BuildishWrapperJarPin -ProjectDirectory $projectDirectory -Sha256 (Get-BuildishPublishedWrapperJarChecksum -GradleVersion $TwoSegmentGradleVersion)
   Remove-Item -LiteralPath $wrapperJarPath, (Join-Path -Path $wrapperDirectory -ChildPath "gradle-wrapper-$TwoSegmentGradleVersion.sha256"), (Join-Path -Path $wrapperDirectory -ChildPath "gradle-wrapper-$TwoSegmentGradleVersion.asc") -Force -ErrorAction SilentlyContinue
   # This fresh download runs the helper through gradlew.bat's Windows PowerShell
   # 5.1 process. GPG creates a new temporary keybox and writes that successful
   # initialization diagnostic to stderr, which must not abort signature checks.
-  Invoke-BuildishWithGradleUserHome -ProjectDirectory $projectDirectory -Label 'cmd gradlew.bat help' -Command {
+  Invoke-BuildishWithGradleUserHome -ProjectDirectory $projectDirectory -Label 'cmd gradlew.bat second wrapper upgrade pass' -Command {
     Push-Location $projectDirectory
-    try { & cmd.exe /d /c 'gradlew.bat --no-daemon help' } finally { Pop-Location }
+    try { & cmd.exe /d /c "gradlew.bat --no-daemon wrapper --gradle-version $TwoSegmentGradleVersion --distribution-type bin" } finally { Pop-Location }
   }
   Assert-BuildishMetadataForVersion -ProjectDirectory $projectDirectory -GradleVersion $TwoSegmentGradleVersion
 

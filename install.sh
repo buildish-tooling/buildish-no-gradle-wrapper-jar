@@ -58,6 +58,39 @@ buildish_install_assert_not_symlink() {
   [ ! -L "$1" ] || buildish_install_fail "$2 must not be a symbolic link: '$1'."
 }
 
+buildish_install_assert_directory() {
+  buildish_install_assert_not_symlink "$1" "$2"
+  [ -d "$1" ] || buildish_install_fail "$2 must be a directory: '$1'."
+}
+
+buildish_install_assert_regular_file() {
+  buildish_install_assert_not_symlink "$1" "$2"
+  [ -f "$1" ] || buildish_install_fail "$2 must be a regular file: '$1'."
+}
+
+buildish_install_assert_regular_file_or_absent() {
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    buildish_install_assert_regular_file "$1" "$2"
+  fi
+}
+
+# Match exact logical lines regardless of whether the file uses LF or CRLF.
+# Plain `grep -x` includes the carriage return in a CRLF line and therefore
+# cannot safely implement installer idempotency for Windows launchers.
+buildish_install_file_has_exact_line() {
+  target_path=$1
+  expected_line=$2
+
+  while IFS= read -r current_line || [ -n "$current_line" ]; do
+    case $current_line in
+      *"$BUILDISH_CR") current_line=${current_line%"$BUILDISH_CR"} ;;
+    esac
+    [ "$current_line" = "$expected_line" ] && return 0
+  done < "$target_path"
+
+  return 1
+}
+
 # Create temp files alongside the destination so the final move stays on the same
 # filesystem and is as atomic as the platform allows.
 buildish_install_make_temp() {
@@ -85,9 +118,10 @@ buildish_install_copy_to() {
   [ -f "$source_path" ] || buildish_install_fail "$label source file was not found at '$source_path'."
   buildish_install_assert_not_symlink "$target_path" "$label"
   buildish_install_assert_not_symlink "$source_path" "$label source file"
-  temp_path=$(buildish_install_make_temp "$GRADLE_DIR") || buildish_install_fail "Unable to create a temporary file for $label."
+  target_directory=${target_path%/*}
+  temp_path=$(buildish_install_make_temp "$target_directory") || buildish_install_fail "Unable to create a temporary file for $label."
 
-  if ! cat "$source_path" > "$temp_path"; then
+  if ! cp -p "$source_path" "$temp_path"; then
     rm -f "$temp_path"
     buildish_install_fail "Unable to copy $label from '$source_path'."
   fi
@@ -152,14 +186,17 @@ buildish_install_insert_after_any_line() {
   buildish_install_assert_not_symlink "$target_path" "$label"
 
   insertion_first_line=$(printf '%s' "$insertion_block" | sed -n '1p')
-  if grep -Fqx "$insertion_first_line" "$target_path"; then
+  if buildish_install_file_has_exact_line "$target_path" "$insertion_first_line"; then
     return 0
   fi
 
-  temp_path=$(buildish_install_make_temp "$TARGET_DIR_ABSOLUTE") ||
+  target_directory=${target_path%/*}
+  temp_path=$(buildish_install_make_temp "$target_directory") ||
     buildish_install_fail "Unable to create a temporary file while patching $label."
-  was_executable=0
-  [ -x "$target_path" ] && was_executable=1
+  if ! cp -p "$target_path" "$temp_path" || ! : > "$temp_path"; then
+    rm -f "$temp_path"
+    buildish_install_fail "Unable to prepare a temporary file while patching $label."
+  fi
   found_anchor=0
 
   while IFS= read -r current_line || [ -n "$current_line" ]; do
@@ -188,10 +225,6 @@ buildish_install_insert_after_any_line() {
     buildish_install_fail "Unable to find the expected insertion point in $label at '$target_path'."
   fi
 
-  if [ "$was_executable" -eq 1 ]; then
-    chmod +x "$temp_path"
-  fi
-
   buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to replace patched $label at '$target_path'."
 }
 
@@ -212,14 +245,17 @@ buildish_install_replace_exact_line_if_present() {
   buildish_install_assert_not_symlink "$target_path" "$label"
 
   replacement_first_line=$(printf '%s' "$replacement" | sed -n '1p')
-  if grep -Fqx "$replacement_first_line" "$target_path"; then
+  if buildish_install_file_has_exact_line "$target_path" "$replacement_first_line"; then
     return 0
   fi
 
-  temp_path=$(buildish_install_make_temp "$TARGET_DIR_ABSOLUTE") ||
+  target_directory=${target_path%/*}
+  temp_path=$(buildish_install_make_temp "$target_directory") ||
     buildish_install_fail "Unable to create a temporary file while updating $label."
-  was_executable=0
-  [ -x "$target_path" ] && was_executable=1
+  if ! cp -p "$target_path" "$temp_path" || ! : > "$temp_path"; then
+    rm -f "$temp_path"
+    buildish_install_fail "Unable to prepare a temporary file while updating $label."
+  fi
   replaced=0
 
   while IFS= read -r current_line || [ -n "$current_line" ]; do
@@ -243,10 +279,6 @@ buildish_install_replace_exact_line_if_present() {
   if [ "$replaced" -ne 1 ]; then
     rm -f "$temp_path"
     return 0
-  fi
-
-  if [ "$was_executable" -eq 1 ]; then
-    chmod +x "$temp_path"
   fi
 
   buildish_install_move_temp_file "$temp_path" "$target_path" "Unable to replace updated $label at '$target_path'."
@@ -273,34 +305,19 @@ buildish_install_assert_any_exact_line_present() {
   buildish_install_fail "Unable to apply the expected update to $label at '$target_path'."
 }
 
-# The installer intentionally removes any existing wrapper JAR so subsequent
-# `./gradlew` runs must go through the helper's verification / redownload path.
-buildish_install_remove_regular_file() {
-  target_path=$1
-  label=$2
-
-  if [ ! -e "$target_path" ]; then
-    return 0
-  fi
-
-  buildish_install_assert_not_symlink "$target_path" "$label"
-  [ -f "$target_path" ] || buildish_install_fail "$label must be a regular file: '$target_path'."
-  rm -f "$target_path" || buildish_install_fail "Unable to remove $label at '$target_path'."
-}
-
 # Keep the retained metadata files out of source control by default while leaving
 # teams free to commit them if their policy prefers that.
 buildish_install_update_gitignore() {
-  gitignore_path=$TARGET_DIR_ABSOLUTE/.gitignore
+  gitignore_path=$1
   entry_sha='gradle/wrapper/gradle-wrapper-*.sha256'
   entry_asc='gradle/wrapper/gradle-wrapper-*.asc'
   comment_line='# Added by buildish-no-gradle-wrapper-jar'
 
   if [ -e "$gitignore_path" ]; then
     buildish_install_assert_not_symlink "$gitignore_path" '.gitignore'
-    grep -Fqx "$entry_sha" "$gitignore_path" && has_sha=1 || has_sha=0
-    grep -Fqx "$entry_asc" "$gitignore_path" && has_asc=1 || has_asc=0
-    grep -Fqx "$comment_line" "$gitignore_path" && has_comment=1 || has_comment=0
+    buildish_install_file_has_exact_line "$gitignore_path" "$entry_sha" && has_sha=1 || has_sha=0
+    buildish_install_file_has_exact_line "$gitignore_path" "$entry_asc" && has_asc=1 || has_asc=0
+    buildish_install_file_has_exact_line "$gitignore_path" "$comment_line" && has_comment=1 || has_comment=0
   else
     has_sha=0
     has_asc=0
@@ -311,8 +328,13 @@ buildish_install_update_gitignore() {
     return 0
   fi
 
-  temp_path=$(buildish_install_make_temp "$TARGET_DIR_ABSOLUTE") ||
+  gitignore_directory=${gitignore_path%/*}
+  temp_path=$(buildish_install_make_temp "$gitignore_directory") ||
     buildish_install_fail "Unable to create a temporary file while updating .gitignore."
+  if ! cp -p "$gitignore_path" "$temp_path" || ! : > "$temp_path"; then
+    rm -f "$temp_path"
+    buildish_install_fail 'Unable to prepare a temporary file while updating .gitignore.'
+  fi
 
   if [ -f "$gitignore_path" ]; then
     cat "$gitignore_path" > "$temp_path"
@@ -332,58 +354,121 @@ buildish_install_update_gitignore() {
 }
 
 buildish_install_stage_helper_files() {
+  destination_directory=$1
   buildish_install_stage_tool_file \
-    "$HELPER_SH_PATH" \
+    "$destination_directory/buildish-no-gradle-wrapper-jar.sh" \
     'buildish-no-gradle-wrapper-jar.sh' \
     'POSIX helper script'
   buildish_install_stage_tool_file \
-    "$HELPER_PS1_PATH" \
+    "$destination_directory/buildish-no-gradle-wrapper-jar.ps1" \
     'buildish-no-gradle-wrapper-jar.ps1' \
     'PowerShell helper script'
   buildish_install_stage_tool_file \
-    "$HELPER_INIT_PATH" \
+    "$destination_directory/buildish-no-gradle-wrapper-jar.init.gradle.kts" \
     'buildish-no-gradle-wrapper-jar.init.gradle.kts' \
     'Gradle init script'
 }
 
 buildish_install_update_gradlew_bat() {
+  gradlew_bat_path=$1
   buildish_install_replace_exact_line_if_present \
-    "$GRADLEW_BAT_PATH" \
+    "$gradlew_bat_path" \
     "$GRADLEW_BAT_HELPER_COMMAND" \
     "$GRADLEW_BAT_HELPER_BLOCK" \
     'gradlew.bat'
   buildish_install_insert_after_any_line \
-    "$GRADLEW_BAT_PATH" \
+    "$gradlew_bat_path" \
     "$GRADLEW_BAT_HELPER_BLOCK" \
     'gradlew.bat' \
     "$GRADLEW_BAT_ANCHOR"
   buildish_install_replace_exact_line_if_present \
-    "$GRADLEW_BAT_PATH" \
+    "$gradlew_bat_path" \
     "$GRADLEW_BAT_OLD_EXECUTE_LINE" \
     "$GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE" \
     'gradlew.bat'
   buildish_install_replace_exact_line_if_present \
-    "$GRADLEW_BAT_PATH" \
+    "$gradlew_bat_path" \
     "$GRADLEW_BAT_LEGACY_EXECUTE_LINE" \
     "$GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE" \
     'gradlew.bat'
   buildish_install_replace_exact_line_if_present \
-    "$GRADLEW_BAT_PATH" \
+    "$gradlew_bat_path" \
     "$GRADLEW_BAT_CURRENT_EXECUTE_LINE" \
     "$GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE" \
     'gradlew.bat'
   buildish_install_replace_exact_line_if_present \
-    "$GRADLEW_BAT_PATH" \
+    "$gradlew_bat_path" \
     "$GRADLEW_BAT_GRADLE_9_EXECUTE_LINE" \
     "$GRADLEW_BAT_PATCHED_GRADLE_9_EXECUTE_LINE" \
     'gradlew.bat'
   buildish_install_assert_any_exact_line_present \
-    "$GRADLEW_BAT_PATH" \
+    "$gradlew_bat_path" \
     'gradlew.bat' \
     "$GRADLEW_BAT_PATCHED_OLD_EXECUTE_LINE" \
     "$GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE" \
     "$GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE" \
     "$GRADLEW_BAT_PATCHED_GRADLE_9_EXECUTE_LINE"
+}
+
+BUILDISH_INSTALL_TRANSACTION_DIR=''
+BUILDISH_INSTALL_TRANSACTION_ACTIVE=0
+
+buildish_install_backup_destination() {
+  destination_path=$1
+  backup_name=$2
+  backup_path=$BUILDISH_INSTALL_TRANSACTION_DIR/backup.$backup_name
+  absent_marker=$BUILDISH_INSTALL_TRANSACTION_DIR/absent.$backup_name
+
+  if [ -e "$destination_path" ] || [ -L "$destination_path" ]; then
+    mv "$destination_path" "$backup_path" ||
+      buildish_install_fail "Unable to back up '$destination_path' before installation."
+  else
+    : > "$absent_marker" ||
+      buildish_install_fail "Unable to record the absent destination '$destination_path'."
+  fi
+}
+
+buildish_install_restore_destination() {
+  destination_path=$1
+  backup_name=$2
+  backup_path=$BUILDISH_INSTALL_TRANSACTION_DIR/backup.$backup_name
+  absent_marker=$BUILDISH_INSTALL_TRANSACTION_DIR/absent.$backup_name
+
+  if [ -e "$backup_path" ]; then
+    rm -f "$destination_path" >/dev/null 2>&1 || true
+    mv "$backup_path" "$destination_path" >/dev/null 2>&1 || true
+  elif [ -e "$absent_marker" ]; then
+    rm -f "$destination_path" >/dev/null 2>&1 || true
+  fi
+}
+
+buildish_install_rollback_transaction() {
+  buildish_install_restore_destination "$WRAPPER_JAR_PATH" wrapper-jar
+  buildish_install_restore_destination "$TARGET_DIR_ABSOLUTE/.gitignore" gitignore
+  buildish_install_restore_destination "$GRADLEW_BAT_PATH" gradlew-bat
+  buildish_install_restore_destination "$GRADLEW_PATH" gradlew
+  buildish_install_restore_destination "$HELPER_INIT_PATH" helper-init
+  buildish_install_restore_destination "$HELPER_PS1_PATH" helper-ps1
+  buildish_install_restore_destination "$HELPER_SH_PATH" helper-sh
+}
+
+buildish_install_transaction_exit() {
+  exit_status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$BUILDISH_INSTALL_TRANSACTION_ACTIVE" -eq 1 ]; then
+    buildish_install_rollback_transaction
+  fi
+  if [ -n "$BUILDISH_INSTALL_TRANSACTION_DIR" ] && [ -d "$BUILDISH_INSTALL_TRANSACTION_DIR" ]; then
+    rm -rf "$BUILDISH_INSTALL_TRANSACTION_DIR"
+  fi
+  exit "$exit_status"
+}
+
+buildish_install_publish_staged_file() {
+  staged_path=$1
+  destination_path=$2
+  mv "$staged_path" "$destination_path" ||
+    buildish_install_fail "Unable to publish staged file to '$destination_path'."
 }
 
 buildish_install_require_command mktemp
@@ -416,12 +501,13 @@ done
 
 [ "$#" -le 1 ] || buildish_install_fail 'Expected zero or one positional argument: the target project directory.'
 TARGET_DIR=${1:-.}
-[ -d "$TARGET_DIR" ] || buildish_install_fail "Target directory does not exist: '$TARGET_DIR'."
+buildish_install_assert_directory "$TARGET_DIR" 'Target project directory'
 
 TARGET_DIR_ABSOLUTE=$(cd "$TARGET_DIR" >/dev/null 2>&1 && pwd) ||
   buildish_install_fail "Unable to resolve target directory '$TARGET_DIR'."
 [ -n "$BUILDISH_TRUSTED_SOURCE_DIR" ] ||
   buildish_install_fail '--trusted-source-dir is required. This installer only stages already-trusted local files.'
+buildish_install_assert_directory "$BUILDISH_TRUSTED_SOURCE_DIR" 'Trusted local source directory'
 TRUSTED_SOURCE_DIR_ABSOLUTE=$(cd "$BUILDISH_TRUSTED_SOURCE_DIR" >/dev/null 2>&1 && pwd) ||
   buildish_install_fail "Unable to resolve trusted local source directory '$BUILDISH_TRUSTED_SOURCE_DIR'."
 GRADLE_DIR=$TARGET_DIR_ABSOLUTE/gradle
@@ -461,9 +547,48 @@ GRADLEW_BAT_PATCHED_LEGACY_EXECUTE_LINE=$(buildish_install_patch_batch_execute_l
 GRADLEW_BAT_PATCHED_CURRENT_EXECUTE_LINE=$(buildish_install_patch_batch_execute_line "$GRADLEW_BAT_CURRENT_EXECUTE_LINE")
 GRADLEW_BAT_PATCHED_GRADLE_9_EXECUTE_LINE=$(buildish_install_patch_batch_execute_line "$GRADLEW_BAT_GRADLE_9_EXECUTE_LINE")
 
-[ -f "$PROPERTIES_PATH" ] ||
+buildish_install_assert_directory "$TARGET_DIR_ABSOLUTE" 'Target project directory'
+buildish_install_assert_directory "$GRADLE_DIR" 'Gradle directory'
+buildish_install_assert_directory "$WRAPPER_DIR" 'Gradle wrapper directory'
+[ -e "$PROPERTIES_PATH" ] || [ -L "$PROPERTIES_PATH" ] ||
   buildish_install_fail "Gradle wrapper properties file was not found at '$PROPERTIES_PATH'. Run this installer from a Gradle project root or pass that directory as the only argument."
-buildish_install_assert_not_symlink "$PROPERTIES_PATH" 'gradle-wrapper.properties'
+buildish_install_assert_regular_file "$PROPERTIES_PATH" 'gradle-wrapper.properties'
+buildish_install_assert_regular_file "$GRADLEW_PATH" 'gradlew'
+buildish_install_assert_regular_file "$GRADLEW_BAT_PATH" 'gradlew.bat'
+buildish_install_assert_regular_file_or_absent "$WRAPPER_JAR_PATH" 'gradle-wrapper.jar'
+buildish_install_assert_regular_file_or_absent "$HELPER_SH_PATH" 'POSIX helper script'
+buildish_install_assert_regular_file_or_absent "$HELPER_PS1_PATH" 'PowerShell helper script'
+buildish_install_assert_regular_file_or_absent "$HELPER_INIT_PATH" 'Gradle init script'
+buildish_install_assert_regular_file_or_absent "$TARGET_DIR_ABSOLUTE/.gitignore" '.gitignore'
+buildish_install_assert_regular_file "$TRUSTED_SOURCE_DIR_ABSOLUTE/buildish-no-gradle-wrapper-jar.sh" 'POSIX helper source file'
+buildish_install_assert_regular_file "$TRUSTED_SOURCE_DIR_ABSOLUTE/buildish-no-gradle-wrapper-jar.ps1" 'PowerShell helper source file'
+buildish_install_assert_regular_file "$TRUSTED_SOURCE_DIR_ABSOLUTE/buildish-no-gradle-wrapper-jar.init.gradle.kts" 'Gradle init-script source file'
+
+distribution_line=$(sed -n '/^distributionUrl=/{p;q;}' "$PROPERTIES_PATH")
+[ -n "$distribution_line" ] ||
+  buildish_install_fail 'Gradle wrapper properties file is missing a distributionUrl entry.'
+distribution_url=$(printf '%s' "$distribution_line" | sed 's/^distributionUrl=//; s/\\:/:/g')
+distribution_version=$(printf '%s' "$distribution_url" | sed -n 's#^https://services\.gradle\.org/distributions/gradle-\([0-9][0-9]*\(\.[0-9][0-9]*\)\{1,2\}\)-\(bin\|all\)\.zip$#\1#p')
+[ -n "$distribution_version" ] ||
+  buildish_install_fail 'distributionUrl must be a canonical HTTPS services.gradle.org URL ending in gradle-<version>-bin.zip or gradle-<version>-all.zip.'
+
+wrapper_pin_name='buildishWrapperJarSha256Sum'
+wrapper_pin_count=$(grep -c "^${wrapper_pin_name}=" "$PROPERTIES_PATH" || true)
+case $wrapper_pin_count in
+  0)
+    buildish_install_fail "Gradle wrapper properties file is missing the required ${wrapper_pin_name} entry. Add the reviewed Gradle wrapper JAR SHA-256 for the distributionUrl version before installing."
+    ;;
+  1)
+    ;;
+  *)
+    buildish_install_fail "Gradle wrapper properties file contains duplicate ${wrapper_pin_name} entries. Keep exactly one reviewed lowercase SHA-256 value."
+    ;;
+esac
+wrapper_pin_line=$(sed -n "/^${wrapper_pin_name}=/{p;q;}" "$PROPERTIES_PATH")
+wrapper_pin_value=${wrapper_pin_line#*=}
+printf '%s' "$wrapper_pin_value" | grep -E '^[0-9a-f]{64}$' >/dev/null 2>&1 ||
+  buildish_install_fail "${wrapper_pin_name} must be exactly one lowercase 64-character SHA-256 value."
+
 # The helper can reconstruct and verify `gradle-wrapper.jar`, but it does not
 # replace Gradle's own distribution ZIP verification. Warn early so adopters see
 # the trust gap in the generated properties file before the first wrapper run.
@@ -471,19 +596,60 @@ if ! grep -Eq '^distributionSha256Sum=[^[:space:]].*' "$PROPERTIES_PATH"; then
   buildish_install_warn "WARNING: '$PROPERTIES_PATH' does not define distributionSha256Sum. Gradle itself will not pin the distribution ZIP checksum during wrapper downloads; this helper continues, but it only verifies gradle-wrapper.jar."
 fi
 
-# Stage helper files first so launcher patches never point at missing scripts.
-buildish_install_stage_helper_files
-buildish_install_remove_regular_file "$WRAPPER_JAR_PATH" 'gradle-wrapper.jar'
+# Build and validate every prospective output in an isolated project-local
+# transaction directory before moving any managed destination out of place.
+BUILDISH_INSTALL_TRANSACTION_DIR=$(mktemp -d "$TARGET_DIR_ABSOLUTE/.buildish-no-gradle-wrapper-jar-transaction.XXXXXX") ||
+  buildish_install_fail 'Unable to create the installer transaction directory.'
+trap 'buildish_install_transaction_exit' EXIT
+trap 'exit 1' HUP INT TERM
 
-# Patch both launchers and then assert that the final expected batch execute line
-# is present so silent launcher-format drift does not go unnoticed.
+STAGED_GRADLEW_PATH=$BUILDISH_INSTALL_TRANSACTION_DIR/gradlew
+STAGED_GRADLEW_BAT_PATH=$BUILDISH_INSTALL_TRANSACTION_DIR/gradlew.bat
+STAGED_GITIGNORE_PATH=$BUILDISH_INSTALL_TRANSACTION_DIR/gitignore
+cp -p "$GRADLEW_PATH" "$STAGED_GRADLEW_PATH" ||
+  buildish_install_fail 'Unable to stage gradlew for validation.'
+cp -p "$GRADLEW_BAT_PATH" "$STAGED_GRADLEW_BAT_PATH" ||
+  buildish_install_fail 'Unable to stage gradlew.bat for validation.'
+if [ -f "$TARGET_DIR_ABSOLUTE/.gitignore" ]; then
+  cp -p "$TARGET_DIR_ABSOLUTE/.gitignore" "$STAGED_GITIGNORE_PATH" ||
+    buildish_install_fail 'Unable to stage .gitignore for validation.'
+else
+  : > "$STAGED_GITIGNORE_PATH" ||
+    buildish_install_fail 'Unable to stage a new .gitignore for validation.'
+fi
+buildish_install_stage_helper_files "$BUILDISH_INSTALL_TRANSACTION_DIR"
+
 buildish_install_insert_after_any_line \
-  "$GRADLEW_PATH" \
+  "$STAGED_GRADLEW_PATH" \
   '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' \
   'gradlew' \
   "$GRADLEW_CURRENT_ANCHOR" \
   "$GRADLEW_OLD_ANCHOR"
-buildish_install_update_gradlew_bat
-buildish_install_update_gitignore
+buildish_install_update_gradlew_bat "$STAGED_GRADLEW_BAT_PATH"
+buildish_install_update_gitignore "$STAGED_GITIGNORE_PATH"
+
+# Back up the complete managed set before publication. The EXIT trap restores
+# every original if any move fails; the wrapper JAR backup is intentionally not
+# republished on success.
+BUILDISH_INSTALL_TRANSACTION_ACTIVE=1
+buildish_install_backup_destination "$HELPER_SH_PATH" helper-sh
+buildish_install_backup_destination "$HELPER_PS1_PATH" helper-ps1
+buildish_install_backup_destination "$HELPER_INIT_PATH" helper-init
+buildish_install_backup_destination "$GRADLEW_PATH" gradlew
+buildish_install_backup_destination "$GRADLEW_BAT_PATH" gradlew-bat
+buildish_install_backup_destination "$TARGET_DIR_ABSOLUTE/.gitignore" gitignore
+buildish_install_backup_destination "$WRAPPER_JAR_PATH" wrapper-jar
+
+buildish_install_publish_staged_file "$BUILDISH_INSTALL_TRANSACTION_DIR/buildish-no-gradle-wrapper-jar.sh" "$HELPER_SH_PATH"
+buildish_install_publish_staged_file "$BUILDISH_INSTALL_TRANSACTION_DIR/buildish-no-gradle-wrapper-jar.ps1" "$HELPER_PS1_PATH"
+buildish_install_publish_staged_file "$BUILDISH_INSTALL_TRANSACTION_DIR/buildish-no-gradle-wrapper-jar.init.gradle.kts" "$HELPER_INIT_PATH"
+buildish_install_publish_staged_file "$STAGED_GRADLEW_PATH" "$GRADLEW_PATH"
+buildish_install_publish_staged_file "$STAGED_GRADLEW_BAT_PATH" "$GRADLEW_BAT_PATH"
+buildish_install_publish_staged_file "$STAGED_GITIGNORE_PATH" "$TARGET_DIR_ABSOLUTE/.gitignore"
+
+BUILDISH_INSTALL_TRANSACTION_ACTIVE=0
+rm -rf "$BUILDISH_INSTALL_TRANSACTION_DIR"
+BUILDISH_INSTALL_TRANSACTION_DIR=''
+trap - EXIT HUP INT TERM
 
 echo "${BUILDISH_TOOL_NAME} install: Installed helper files into '$GRADLE_DIR' and updated launcher scripts in '$TARGET_DIR_ABSOLUTE'."

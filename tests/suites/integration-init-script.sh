@@ -40,6 +40,8 @@ exercise_init_script_idempotence() {
   project_dir=$1
   gradlew_path="$project_dir/gradlew"
   gradlew_bat_path="$project_dir/gradlew.bat"
+  properties_path=$project_dir/gradle/wrapper/gradle-wrapper.properties
+  wrapper_pin=$(sed -n 's/^buildishWrapperJarSha256Sum=//p' "$properties_path")
 
   log "exercising init-script idempotence in '$project_dir'"
   cat >> "$project_dir/build.gradle" <<'EOF'
@@ -71,9 +73,27 @@ EOF
 
   run_gradle_with_init_script_capture "$project_dir" wrapper
   assert_last_command_succeeded 'Init script unexpectedly duplicated an already patched launcher.'
+  assert_file_exact_line_count "$properties_path" "buildishWrapperJarSha256Sum=$wrapper_pin" 1 'Init script did not preserve exactly one reviewed wrapper-JAR pin across Gradle property regeneration.'
   assert_file_exact_line_count "$gradlew_path" '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' 1 'Init script duplicated the POSIX helper include in an already patched gradlew.'
   assert_file_exact_line_count "$gradlew_bat_path" 'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*' 1 'Init script duplicated the batch helper block in an already patched gradlew.bat.'
   assert_file_exact_line_count "$gradlew_bat_path" 'endlocal & "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS% %* & call :exitWithErrorLevel' 1 'Init script duplicated the patched batch Java invocation line.'
+}
+
+# Refuse to run the Wrapper task without the reviewed project-owned digest. The
+# check is attached as doFirst so Gradle cannot first rewrite properties and
+# launchers into an unbound state.
+exercise_init_script_missing_wrapper_pin_failure() {
+  project_dir=$1
+  properties_path=$project_dir/gradle/wrapper/gradle-wrapper.properties
+
+  log "exercising init-script missing wrapper-JAR pin failure in '$project_dir'"
+  remove_wrapper_property "$properties_path" buildishWrapperJarSha256Sum
+
+  run_gradle_with_init_script_capture "$project_dir" wrapper
+  assert_last_command_failed 'Init script unexpectedly ran the Wrapper task without buildishWrapperJarSha256Sum.'
+  assert_last_output_contains 'missing the required buildishWrapperJarSha256Sum entry' 'Init script did not explain the required wrapper-JAR pin.'
+  assert_file_exact_line_count "$project_dir/gradlew" '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' 0 'Init script patched gradlew despite rejecting the missing wrapper-JAR pin before task execution.'
+  assert_file_exact_line_count "$project_dir/gradlew.bat" 'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*' 0 'Init script patched gradlew.bat despite rejecting the missing wrapper-JAR pin before task execution.'
 }
 
 # Exercise init-script patching of launcher files that lack trailing newlines so
@@ -138,6 +158,7 @@ EOF
   run_gradle_with_init_script_capture "$project_dir" wrapper
   assert_last_command_failed 'Init script unexpectedly accepted an unsupported gradlew anchor.'
   assert_last_output_contains 'Unable to find the expected insertion point in gradlew' 'Init script failure output did not mention the unsupported gradlew anchor.'
+  assert_file_exact_line_count "$project_dir/gradlew.bat" 'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*' 0 'Init script modified gradlew.bat despite failing gradlew preflight.'
 }
 
 # Exercise the init-script failure path when gradlew.bat no longer contains the
@@ -168,6 +189,8 @@ EOF
   run_gradle_with_init_script_capture "$project_dir" wrapper
   assert_last_command_failed 'Init script unexpectedly accepted an unsupported gradlew.bat execute line.'
   assert_last_output_contains 'Unable to find the expected replacement point in gradlew.bat' 'Init script failure output did not mention the unsupported gradlew.bat execute line.'
+  assert_file_exact_line_count "$project_dir/gradlew" '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' 0 'Init script modified gradlew despite failing gradlew.bat preflight.'
+  assert_file_exact_line_count "$project_dir/gradlew.bat" 'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*' 0 'Init script partially inserted the batch helper block before failing gradlew.bat preflight.'
 }
 
 # Run the init-script-focused regression slice on independent fixture copies so
@@ -185,6 +208,9 @@ run_init_script_focused_suite() {
 
   copy_init_script_fixture "$base_project" "$scenario_root/idempotence"
   exercise_init_script_idempotence "$scenario_root/idempotence"
+
+  copy_init_script_fixture "$base_project" "$scenario_root/missing-wrapper-pin"
+  exercise_init_script_missing_wrapper_pin_failure "$scenario_root/missing-wrapper-pin"
 
   copy_init_script_fixture "$base_project" "$scenario_root/newline-preservation"
   exercise_init_script_newline_preservation "$scenario_root/newline-preservation"

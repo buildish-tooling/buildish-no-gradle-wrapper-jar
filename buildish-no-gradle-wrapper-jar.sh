@@ -23,7 +23,8 @@
 # High-level behavior:
 #   1. Optionally prepend this tool's init script to the Gradle invocation so the
 #      `Wrapper` task re-patches freshly generated launcher files.
-#   2. Read `gradle-wrapper.properties` to determine the requested Gradle version.
+#   2. Read `gradle-wrapper.properties` to determine the requested Gradle version
+#      and its project-reviewed wrapper-JAR digest pin.
 #   3. Ensure the detached-signature metadata files for that version are present.
 #   4. Verify any existing `gradle-wrapper.jar` against the expected checksum and
 #      the pinned Gradle signing key.
@@ -33,7 +34,10 @@
 # Trust model:
 #   * The helper accepts only canonical `https://services.gradle.org/...` wrapper
 #     distribution URLs so that it can derive the corresponding metadata URLs.
-#   * The checksum and detached signature are fetched from services.gradle.org.
+#   * A required project-owned checksum pin binds the accepted JAR to the
+#     reviewed wrapper configuration and requested Gradle version.
+#   * The upstream checksum and detached signature are fetched from
+#     services.gradle.org and must agree with that project pin.
 #   * The wrapper JAR bytes are fetched from the matching Gradle Git tag on GitHub.
 #   * The downloaded JAR is accepted only if both the checksum and detached
 #     signature validate against the pinned Gradle public signing key below.
@@ -55,6 +59,34 @@ buildish_no_gradle_wrapper_jar_require_command() {
 # the same confinement before it reads or replaces cached metadata and JARs.
 buildish_no_gradle_wrapper_jar_assert_not_symlink() {
   [ ! -L "$1" ] || buildish_no_gradle_wrapper_jar_fail "$2 must not be a symbolic link: '$1'."
+}
+
+# Read the project-owned wrapper-JAR digest pin as an unambiguous, canonical
+# property. Missing, duplicate, uppercase, or otherwise malformed values fail
+# closed because this value is the reviewed version-to-artifact binding.
+buildish_no_gradle_wrapper_jar_read_project_checksum_pin() {
+  properties_path=$1
+  property_name='buildishWrapperJarSha256Sum'
+  property_count=$(grep -c "^${property_name}=" "$properties_path" || true)
+
+  case $property_count in
+    0)
+      buildish_no_gradle_wrapper_jar_fail "Gradle wrapper properties file is missing the required ${property_name} entry. Add the reviewed Gradle wrapper JAR SHA-256 for the distributionUrl version."
+      ;;
+    1)
+      ;;
+    *)
+      buildish_no_gradle_wrapper_jar_fail "Gradle wrapper properties file contains duplicate ${property_name} entries. Keep exactly one reviewed lowercase SHA-256 value."
+      ;;
+  esac
+
+  property_line=$(sed -n "/^${property_name}=/{p;q;}" "$properties_path")
+  property_value=${property_line#*=}
+  if ! printf '%s' "$property_value" | grep -E '^[0-9a-f]{64}$' >/dev/null 2>&1; then
+    buildish_no_gradle_wrapper_jar_fail "${property_name} must be exactly one lowercase 64-character SHA-256 value."
+  fi
+
+  BUILDISH_HELPER_PROJECT_SHA256=$property_value
 }
 
 # Return the lowercase SHA-256 hex digest of a file using whichever common tool is
@@ -389,6 +421,8 @@ BUILDISH_HELPER_DIST_VERSION=$(printf '%s' "$distribution_url" | sed -n 's#^http
 [ -n "$BUILDISH_HELPER_DIST_VERSION" ] ||
   buildish_no_gradle_wrapper_jar_fail "distributionUrl must be a canonical HTTPS services.gradle.org URL ending in gradle-<version>-bin.zip or gradle-<version>-all.zip."
 
+buildish_no_gradle_wrapper_jar_read_project_checksum_pin "$BUILDISH_HELPER_PROPERTIES_PATH"
+
 # Gradle Git tags always use three numeric version segments, while wrapper
 # distributions sometimes use two-segment versions such as `8.3`. Normalize those
 # to `8.3.0` for the GitHub source-JAR URL.
@@ -407,7 +441,10 @@ BUILDISH_HELPER_JAR_URL="https://raw.githubusercontent.com/gradle/gradle/v${BUIL
 # The metadata files are cached in the project so later runs can verify an
 # existing wrapper JAR without immediately redownloading side files.
 buildish_no_gradle_wrapper_jar_ensure_metadata_files
-expected_wrapper_checksum=$(tr -d '\r\n' < "$BUILDISH_HELPER_SHA256_PATH" | tr '[:upper:]' '[:lower:]')
+upstream_wrapper_checksum=$(tr -d '\r\n' < "$BUILDISH_HELPER_SHA256_PATH" | tr '[:upper:]' '[:lower:]')
+[ "$upstream_wrapper_checksum" = "$BUILDISH_HELPER_PROJECT_SHA256" ] ||
+  buildish_no_gradle_wrapper_jar_fail "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '${BUILDISH_HELPER_DIST_VERSION}'. Review distributionUrl and the committed pin together."
+expected_wrapper_checksum=$BUILDISH_HELPER_PROJECT_SHA256
 
 buildish_no_gradle_wrapper_jar_assert_not_symlink "$BUILDISH_HELPER_JAR_PATH" 'gradle-wrapper.jar'
 

@@ -241,6 +241,122 @@ exercise_helper_missing_distribution_url_failure() {
   assert_last_output_contains 'distributionUrl entry' "$helper_kind helper failure output did not mention the missing distributionUrl entry."
 }
 
+# The project-owned digest is a security-critical configuration input. Reject
+# missing, duplicate, and non-canonical values before cached or downloaded
+# artifacts can influence wrapper-JAR acceptance.
+exercise_helper_wrapper_pin_validation_failure() {
+  project_dir=$1
+  helper_kind=$2
+  failure_kind=$3
+  properties_path="$project_dir/gradle/wrapper/gradle-wrapper.properties"
+
+  case $failure_kind in
+    missing)
+      log "exercising $helper_kind helper missing wrapper-JAR pin failure in '$project_dir'"
+      remove_wrapper_property "$properties_path" buildishWrapperJarSha256Sum
+      expected_message='missing the required buildishWrapperJarSha256Sum entry'
+      ;;
+    duplicate)
+      log "exercising $helper_kind helper duplicate wrapper-JAR pin failure in '$project_dir'"
+      existing_pin=$(sed -n 's/^buildishWrapperJarSha256Sum=//p' "$properties_path")
+      printf '%s\n' "buildishWrapperJarSha256Sum=$existing_pin" >> "$properties_path"
+      expected_message='duplicate buildishWrapperJarSha256Sum entries'
+      ;;
+    malformed)
+      log "exercising $helper_kind helper malformed wrapper-JAR pin failure in '$project_dir'"
+      set_wrapper_property "$properties_path" buildishWrapperJarSha256Sum 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+      expected_message='must be exactly one lowercase 64-character SHA-256 value'
+      ;;
+    *)
+      fail "unknown wrapper pin failure kind '$failure_kind'"
+      ;;
+  esac
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_failed "$helper_kind helper unexpectedly accepted a $failure_kind wrapper-JAR pin."
+  assert_last_output_contains "$expected_message" "$helper_kind helper did not explain the $failure_kind wrapper-JAR pin failure."
+}
+
+# Build one genuine older-version source with a digest distinct from the current
+# fixture. Its signed checksum/signature/JAR triplet is reused by cache and
+# download replay scenarios for both helpers.
+prepare_cross_version_replay_source() {
+  source_project_dir=$1
+  replay_project_dir=$2
+  replay_version=$3
+  properties_path=$replay_project_dir/gradle/wrapper/gradle-wrapper.properties
+  jar_path=$replay_project_dir/gradle/wrapper/gradle-wrapper.jar
+
+  copy_project_fixture "$source_project_dir" "$replay_project_dir"
+  GRADLE_USER_HOME=$(gradle_user_home "$replay_project_dir") \
+    gradle -p "$replay_project_dir" --no-daemon --console=plain wrapper --gradle-version "$replay_version" --distribution-type bin >/dev/null
+  replay_wrapper_pin=$(fetch_gradle_wrapper_checksum "$replay_version")
+  set_wrapper_property "$properties_path" buildishWrapperJarSha256Sum "$replay_wrapper_pin"
+  rm -f "$jar_path" "$replay_project_dir/gradle/wrapper/gradle-wrapper-$replay_version.sha256" "$replay_project_dir/gradle/wrapper/gradle-wrapper-$replay_version.asc"
+  run_posix_helper_direct "$replay_project_dir"
+  assert_last_command_succeeded "unable to prepare the genuine Gradle $replay_version replay fixture."
+  assert_metadata_for_version "$replay_project_dir" "$replay_version"
+}
+
+# Replace all requested-version cache entries with a genuine older signed
+# artifact triplet. The project pin must reject the coherent replay before the
+# older JAR can be accepted under the newer distributionUrl version.
+exercise_helper_cached_cross_version_replay_rejection() {
+  project_dir=$1
+  older_project_dir=$2
+  helper_kind=$3
+  requested_version=$(extract_gradle_version "$project_dir")
+  older_version=$(extract_gradle_version "$older_project_dir")
+  wrapper_dir=$project_dir/gradle/wrapper
+  older_wrapper_dir=$older_project_dir/gradle/wrapper
+
+  [ "$requested_version" != "$older_version" ] || fail 'cross-version replay fixture requires distinct requested and older Gradle versions.'
+  log "exercising $helper_kind helper cached $older_version-as-$requested_version replay rejection in '$project_dir'"
+  cp "$older_wrapper_dir/gradle-wrapper.jar" "$wrapper_dir/gradle-wrapper.jar"
+  cp "$older_wrapper_dir/gradle-wrapper-$older_version.sha256" "$wrapper_dir/gradle-wrapper-$requested_version.sha256"
+  cp "$older_wrapper_dir/gradle-wrapper-$older_version.asc" "$wrapper_dir/gradle-wrapper-$requested_version.asc"
+  replayed_jar_checksum=$(hash_file "$wrapper_dir/gradle-wrapper.jar")
+
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  assert_last_command_failed "$helper_kind helper unexpectedly accepted a genuine older signed wrapper artifact triplet from cache."
+  assert_last_output_contains 'buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum' "$helper_kind helper did not identify the cached cross-version replay as a project-pin mismatch."
+  [ "$(hash_file "$wrapper_dir/gradle-wrapper.jar")" = "$replayed_jar_checksum" ] || fail "$helper_kind helper mutated the cached JAR before rejecting the replayed metadata binding."
+}
+
+# Serve the same genuine older triplet under the requested-version download URLs
+# to prove the project pin also rejects a coherent substitution by the download
+# path rather than trusting HTTPS metadata as the binding authority.
+exercise_helper_downloaded_cross_version_replay_rejection() {
+  project_dir=$1
+  older_project_dir=$2
+  helper_kind=$3
+  server_root=$project_dir.replay-server
+  requested_version=$(extract_gradle_version "$project_dir")
+  older_version=$(extract_gradle_version "$older_project_dir")
+  wrapper_dir=$project_dir/gradle/wrapper
+  older_wrapper_dir=$older_project_dir/gradle/wrapper
+
+  [ "$requested_version" != "$older_version" ] || fail 'downloaded cross-version replay fixture requires distinct Gradle versions.'
+  log "exercising $helper_kind helper downloaded $older_version-as-$requested_version replay rejection in '$project_dir'"
+  mkdir -p "$server_root"
+  cp "$older_wrapper_dir/gradle-wrapper.jar" "$server_root/gradle-wrapper.jar"
+  cp "$older_wrapper_dir/gradle-wrapper-$older_version.sha256" "$server_root/wrapper.sha256"
+  cp "$older_wrapper_dir/gradle-wrapper-$older_version.asc" "$server_root/wrapper.asc"
+  rm -f \
+    "$wrapper_dir/gradle-wrapper.jar" \
+    "$wrapper_dir/gradle-wrapper-$requested_version.sha256" \
+    "$wrapper_dir/gradle-wrapper-$requested_version.asc"
+
+  start_static_http_server "$server_root"
+  configure_helper_download_urls "$project_dir" "$helper_kind" "http://127.0.0.1:$TEST_HTTP_SERVER_PORT"
+  "run_${helper_kind}_helper_direct" "$project_dir"
+  stop_test_http_server
+
+  assert_last_command_failed "$helper_kind helper unexpectedly accepted a genuine older signed wrapper artifact triplet from the download path."
+  assert_last_output_contains 'buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum' "$helper_kind helper did not identify the downloaded cross-version replay as a project-pin mismatch."
+  [ ! -e "$wrapper_dir/gradle-wrapper.jar" ] || fail "$helper_kind helper downloaded or published a wrapper JAR after the upstream checksum disagreed with the project pin."
+}
+
 # Exercise helper support for two-segment Gradle versions so metadata caching is
 # not coupled to three-segment release numbers.
 exercise_helper_two_segment_version_support() {
@@ -251,7 +367,10 @@ exercise_helper_two_segment_version_support() {
   jar_path="$project_dir/gradle/wrapper/gradle-wrapper.jar"
 
   log "exercising $helper_kind helper two-segment Gradle version support in '$project_dir' for Gradle '$target_version'"
-  set_wrapper_property "$properties_path" distributionUrl "https\://services.gradle.org/distributions/gradle-$target_version-bin.zip"
+  GRADLE_USER_HOME=$(gradle_user_home "$project_dir") \
+    gradle -p "$project_dir" --no-daemon --console=plain wrapper --gradle-version "$target_version" --distribution-type bin >/dev/null
+  target_wrapper_pin=$(fetch_gradle_wrapper_checksum "$target_version")
+  set_wrapper_property "$properties_path" buildishWrapperJarSha256Sum "$target_wrapper_pin"
   rm -f "$jar_path" "$project_dir/gradle/wrapper/gradle-wrapper-$target_version.sha256" "$project_dir/gradle/wrapper/gradle-wrapper-$target_version.asc"
 
   "run_${helper_kind}_helper_direct" "$project_dir"
@@ -322,9 +441,13 @@ run_helper_edge_case_suite() {
   scenario_root="$test_root/helper-edge-cases"
   posix_version=$(extract_gradle_version "$posix_base_project")
   powershell_version=$(extract_gradle_version "$powershell_base_project")
+  replay_source_project=$scenario_root/replay-source
 
   [ -n "$posix_version" ] || fail 'unable to extract the installed Gradle version for the POSIX helper edge-case suite.'
   [ -n "$powershell_version" ] || fail 'unable to extract the installed Gradle version for the PowerShell helper edge-case suite.'
+  prepare_cross_version_replay_source "$posix_base_project" "$replay_source_project" "$TWO_SEGMENT_GRADLE_VERSION"
+  [ "$(hash_file "$posix_base_project/gradle/wrapper/gradle-wrapper.jar")" != "$(hash_file "$replay_source_project/gradle/wrapper/gradle-wrapper.jar")" ] ||
+    fail 'cross-version replay source must have a wrapper-JAR digest distinct from the requested-version fixture.'
 
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-corrupted-jar-cached-metadata"
   exercise_helper_recovery_with_cached_metadata "$scenario_root/posix-corrupted-jar-cached-metadata" "$posix_version" posix
@@ -361,6 +484,17 @@ run_helper_edge_case_suite() {
 
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-distribution-url"
   exercise_helper_missing_distribution_url_failure "$scenario_root/posix-missing-distribution-url" posix
+
+  for failure_kind in missing duplicate malformed; do
+    copy_project_fixture "$posix_base_project" "$scenario_root/posix-wrapper-pin-$failure_kind"
+    exercise_helper_wrapper_pin_validation_failure "$scenario_root/posix-wrapper-pin-$failure_kind" posix "$failure_kind"
+  done
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-cached-cross-version-replay"
+  exercise_helper_cached_cross_version_replay_rejection "$scenario_root/posix-cached-cross-version-replay" "$replay_source_project" posix
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-downloaded-cross-version-replay"
+  exercise_helper_downloaded_cross_version_replay_rejection "$scenario_root/posix-downloaded-cross-version-replay" "$replay_source_project" posix
 
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-two-segment-version"
   exercise_helper_two_segment_version_support "$scenario_root/posix-two-segment-version" posix "$TWO_SEGMENT_GRADLE_VERSION"
@@ -406,6 +540,17 @@ run_helper_edge_case_suite() {
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-distribution-url"
   exercise_helper_missing_distribution_url_failure "$scenario_root/powershell-missing-distribution-url" powershell
+
+  for failure_kind in missing duplicate malformed; do
+    copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-wrapper-pin-$failure_kind"
+    exercise_helper_wrapper_pin_validation_failure "$scenario_root/powershell-wrapper-pin-$failure_kind" powershell "$failure_kind"
+  done
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/powershell-cached-cross-version-replay"
+  exercise_helper_cached_cross_version_replay_rejection "$scenario_root/powershell-cached-cross-version-replay" "$replay_source_project" powershell
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/powershell-downloaded-cross-version-replay"
+  exercise_helper_downloaded_cross_version_replay_rejection "$scenario_root/powershell-downloaded-cross-version-replay" "$replay_source_project" powershell
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-two-segment-version"
   exercise_helper_two_segment_version_support "$scenario_root/powershell-two-segment-version" powershell "$TWO_SEGMENT_GRADLE_VERSION"

@@ -256,6 +256,19 @@ hash_file() {
   fi
 }
 
+# Fetch the official Wrapper JAR checksum for a test-selected Gradle version.
+# Production code does not use this helper: committed project pins remain a
+# reviewed configuration input rather than an automatically trusted response.
+fetch_gradle_wrapper_checksum() {
+  gradle_version=$1
+  checksum=$(curl --fail --location --silent --show-error \
+    "https://services.gradle.org/distributions/gradle-$gradle_version-wrapper.jar.sha256" | tr -d '\r\n') ||
+    fail "unable to fetch the Gradle $gradle_version Wrapper JAR checksum for integration setup."
+  printf '%s' "$checksum" | grep -E '^[0-9a-f]{64}$' >/dev/null 2>&1 ||
+    fail "Gradle $gradle_version returned a malformed Wrapper JAR checksum during integration setup."
+  printf '%s\n' "$checksum"
+}
+
 # Read the wrapper version from gradle-wrapper.properties so follow-up checks can
 # assert against the exact metadata files a scenario should create.
 extract_gradle_version() {
@@ -504,7 +517,9 @@ assert_metadata_for_version() {
   [ -f "$sha_path" ] || fail "wrapper checksum file is missing for version '$version'."
   [ -f "$asc_path" ] || fail "wrapper detached signature is missing for version '$version'."
   expected_checksum=$(tr -d '\r\n' < "$sha_path")
+  project_checksum=$(sed -n 's/^buildishWrapperJarSha256Sum=//p' "$project_dir/gradle/wrapper/gradle-wrapper.properties")
   actual_checksum=$(hash_file "$jar_path")
+  [ "$project_checksum" = "$expected_checksum" ] || fail "project wrapper JAR pin mismatch for version '$version'."
   [ "$expected_checksum" = "$actual_checksum" ] || fail "wrapper checksum mismatch for version '$version'."
   first_signature_line=$(sed -n '1p' "$asc_path")
   [ "$first_signature_line" = '-----BEGIN PGP SIGNATURE-----' ] || fail "wrapper detached signature file for version '$version' is malformed."

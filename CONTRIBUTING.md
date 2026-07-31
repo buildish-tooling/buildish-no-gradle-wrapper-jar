@@ -14,15 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Contributing to Buildish
+# Contributing to Buildish no-gradle-wrapper-jar
 
-Thank you for considering a contribution to Buildish.
+Thank you for considering a contribution to the Buildish no-gradle-wrapper-jar
+blueprint. This repository contains POSIX shell and PowerShell helpers,
+installers, a Gradle init script, integration tests, and the component's
+documentation.
+
+Please follow the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Before opening a pull request
 
 - Check whether an existing issue or pull request already covers the change.
-- For larger changes, start a short design discussion on a GitHub issue before investing heavily in implementation.
+- For larger changes, start a short design discussion on a GitHub issue before
+  investing heavily in implementation.
 - Keep pull requests focused; split unrelated work into separate changes.
+- When behavior exists in both POSIX shell and PowerShell, check whether the
+  equivalent path needs the same change.
 
 ## Pull request expectations
 
@@ -30,107 +38,84 @@ Thank you for considering a contribution to Buildish.
 - Describe the motivation and the change clearly.
 - Add or update tests and documentation when applicable.
 - Keep commit messages and pull request text readable for future project history.
+- State which checks you ran and any remaining platform limitations.
 
 ## Security issues
 
-Do **not** open a public issue for a suspected security vulnerability. Instead, report it to [security@buildish.org](mailto:security@buildish.org).
+Do **not** open a public issue for a suspected security vulnerability. Instead,
+report it to [security@buildish.org](mailto:security@buildish.org).
 
-## Development
+Follow [`SECURITY.md`](SECURITY.md) for the reporting boundary, and read the
+repository [`docs/threat-model.md`](docs/threat-model.md) before reporting or
+changing security-sensitive behavior.
 
-The action project provides both npm scripts and Make targets.
+## Development prerequisites
 
-Use Node `24.13.0` and npm `11.6.2` for local development. The Makefile sanity check enforces those versions.
+The complete local check expects these tools on `PATH`:
 
-Common commands:
+- a POSIX shell, Bash, and common Unix utilities;
+- GNU Make;
+- Java 21 or newer;
+- Gradle;
+- PowerShell (`pwsh`);
+- GnuPG (`gpg`);
+- Python 3;
+- `curl`, Git, and `tar`; and
+- `sha256sum` and `sha512sum`, or compatible `shasum` support.
 
-- `make help`
-- `make build`
-- `make smoke-test`
-- `make integration-test-build-reporting`
-- `make integration-test-distributed-reuse`
-- `make test`
-- `make lint-check`
-- `make release-legal-category-x-check`
-- `make rat-check`
-- `make release-legal-check`
-- `make check`
+The integration tests download Gradle wrapper artifacts from the upstream Gradle
+and GitHub endpoints, and the RAT check may download Apache RAT into the local
+`build/` directory. Network access is therefore required for a clean first run.
 
-Equivalent npm script:
-
-- `npm run rat-check`
-- `npm run release-legal:check-category-x`
-- `npm run release-legal:check`
-- `npm run release-legal:write`
-- `npm run smoke-test`
-- `npm run integration-test:build-reporting`
-- `npm run integration-test:distributed-reuse`
-
-The Makefile verifies the expected `node` and `npm` versions before running user-facing targets.
-
-`npm run release-legal:write` refreshes `legal/github/LICENSE` and
-`legal/github/NOTICE` for the bundled GitHub action distribution. Those files
-are separate from the repository-root `LICENSE` / `NOTICE`, which remain the
-project legal files.
-
-See [`docs/release-legal.md`](docs/release-legal.md) for the release-legal workflow, generation/check commands,
-formatting rules, and current legal-audit status.
-
-### Dependency warning note
-
-If `npm install` / `npm ci` prints a deprecation warning for `glob@10.5.0`, that warning is currently
-transitive and does **not** mean this project depends on `glob` directly.
-
-Current chain:
-
-- `@actions/artifact`
-- `archiver`
-- `archiver-utils`
-- `glob@10.5.0`
-
-This repository already tracks GitHub's current `@actions/artifact` release line. The warning comes from
-that upstream dependency graph, and we will pick up or evaluate a cleaner fix when GitHub's dependency
-stack moves off the older `glob` release.
+Native Windows launcher testing additionally requires `cmd.exe`, Windows
+PowerShell (`powershell.exe`), and a native Windows GnuPG build. The
+Git-for-Windows bundled `gpg.exe` is intentionally tested as an unsupported
+configuration for `gradlew.bat` verification.
 
 ## Local verification
 
-Full local verification:
+Run the narrowest relevant check while iterating, then run the complete check
+before treating a change as finished:
 
-- `npm run verify`
-- `make release-legal-category-x-check`
-- `make smoke-test`
-- `make rat-check`
-- `make release-legal-check`
-- `make check`
+- `make help` — list the supported targets;
+- `make syntax-check` — parse the shell and PowerShell scripts;
+- `make test` — run the POSIX-hosted integration suite;
+- `make rat-check` — run the license-header check;
+- `make release-check` — run the integration and license-header checks; and
+- `make check` — run the complete local verification suite.
 
-This runs:
+On native Windows, also run:
 
-- lint
-- formatting checks
-- unit tests
-- a fresh rebuild
-- bundled Category X license verification (`npm run verify`, `make release-legal-category-x-check`, `make check`, and
-  the regular CI check job)
-- Apache RAT license-header verification (`make check` / `make rat-check`)
+```powershell
+pwsh -NoLogo -NoProfile -File tests/windows-integration.ps1
+pwsh -NoLogo -NoProfile -File tests/windows-git-gpg-rejection.ps1
+```
 
-`make release-legal-check` / `npm run release-legal:check` remains the broader release-preparation audit. It verifies
-`legal/github/LICENSE` and `legal/github/NOTICE` against the actual esbuild bundle and fails closed on unresolved legal
-blockers such as missing third-party attribution data.
+See [`tests/README.md`](tests/README.md) for the test-suite structure and advice
+on where to add new scenarios.
 
-`make smoke-test` / `npm run smoke-test` performs a lightweight bundled-action smoke run against a temporary copy of
-`test/fixtures/smoke`, so it does not modify committed fixture files.
+## Test expectations
 
-`make integration-test-distributed-reuse` / `npm run integration-test:distributed-reuse` stages three temporary copies
-of `test/fixtures/integration/gradle-project`, runs the real worker-A → worker-B → aggregator flow locally, and asserts
-that the aggregator resolves the expected jars without re-downloading those jar files. This scenario requires:
+Changes should include focused regression coverage when practical. Test the
+behavioral contract rather than only the successful path, including relevant
+failure, malformed-input, recovery, idempotency, and platform-specific cases.
 
-- Java 21+
-- network access for the initial wrapper/dependency downloads
-- a POSIX-style shell environment (`gradlew` is used, not `gradlew.bat`)
+The POSIX and PowerShell implementations deliberately provide the same user
+journey through different platform mechanisms. When changing one
+implementation, review its counterpart and the shared launcher-patching
+contract for drift. Keep orchestration in `tests/integration.sh`, shared
+mechanics in `tests/lib/`, and topic-oriented scenarios in `tests/suites/`.
 
-On failure, the staged temporary directory is preserved and printed so you can inspect the generated Gradle homes,
-summaries, and aggregator log locally.
+## Documentation changes
 
-`make integration-test-build-reporting` / `npm run integration-test:build-reporting` stages a temporary Gradle fixture,
-runs multiple Gradle invocations locally, and writes the final step-summary style build report to
-`build/integration-build-reporting-*/build-reporting-summary.md`. Set `BUILDISH_MAMMOTH_CACHE_KEEP_LOCAL_IT=1` to preserve
-the staged directory after a successful run for local inspection.
+The component's published source content lives in `site/pages/` and `docs/`.
+Keep links relative and route-oriented as described in [`AGENTS.md`](AGENTS.md).
+When working in the full Buildish workspace, changes to site content or routing
+must also pass `make site-check-local` from the workspace's `site/` directory.
+
+## Release tooling
+
+The Buildish release process for this component is not yet defined. The scripts
+under `buildish-release-tooling/` are development tooling and must not be used
+to publish a release until reviewed release instructions replace the current
+placeholder process.

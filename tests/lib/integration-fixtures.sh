@@ -346,4 +346,9 @@ gradle_init_fixture() {
     GRADLE_USER_HOME="$fixture_gradle_user_home" gradle -p "$project_dir" init --dsl groovy --type java-library --use-defaults --no-daemon >/dev/null
   fi
   [ -f "$project_dir/gradle/wrapper/gradle-wrapper.jar" ] || fail "gradle init did not create gradle-wrapper.jar in '$project_dir'."
+  wrapper_jar_sha256=$(hash_file "$project_dir/gradle/wrapper/gradle-wrapper.jar")
+  set_wrapper_property \
+    "$project_dir/gradle/wrapper/gradle-wrapper.properties" \
+    buildishWrapperJarSha256Sum \
+    "$wrapper_jar_sha256"
 }

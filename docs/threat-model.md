@@ -43,8 +43,8 @@ Buildish no-gradle-wrapper-jar is a copyable helper blueprint for Gradle project
 using `gradlew` / `gradlew.bat` without committing `gradle/wrapper/gradle-wrapper.jar`. It installs
 project-local helper scripts, patches generated Gradle launchers, recreates the wrapper JAR at
 runtime from Gradle-controlled upstream sources, verifies the JAR with checksum and detached OpenPGP
-signature material, and keeps launcher patches present when the Gradle `Wrapper` task regenerates
-launcher files. *(documented)*
+signature material plus a project-owned version-to-artifact digest pin, and keeps that pin and the
+launcher patches present when the Gradle `Wrapper` task regenerates project files. *(documented)*
 
 ## 2 Scope And Intended Use
 
@@ -82,7 +82,7 @@ Component-family table:
 | Local-copy installers | `install.sh`, `install.ps1` | Reads trusted source directory; copies helper files; removes wrapper JAR; patches launchers; edits `.gitignore`; rejects symlink/reparse-point targets | Yes |
 | Release bootstrap templates | `bootstrap-install.sh`, `bootstrap-install.ps1` | Download release payloads and signed manifests; verify pinned signing key and checksums; hand off to installer via `--trusted-source-dir` | Yes, for template behavior and release-rendered intended behavior |
 | Unsafe development installers | `unsafe-dev-install.sh`, `unsafe-dev-install.ps1` | Download current-branch helper payloads without verification; execute installer; refuse common CI environments; support remote base URL override | In model only as intentionally unsafe / disclaimed behavior |
-| Gradle init script | `buildish-no-gradle-wrapper-jar.init.gradle.kts` | Hooks Gradle `Wrapper` task; reads/writes generated launchers; warns on missing `distributionSha256Sum` | Yes |
+| Gradle init script | `buildish-no-gradle-wrapper-jar.init.gradle.kts` | Hooks Gradle `Wrapper` task; preserves the reviewed wrapper-JAR pin; reads/writes generated launchers; warns on version changes and missing `distributionSha256Sum` | Yes |
 | Site/docs/security assessment | `site/`, `docs/`, `SECURITY-ASSESSMENT.md`, `SECURITY.md` | Documentation only | Yes, as security contract and operator guidance |
 | Tests and test fixtures | `tests/`, `scripts/rat-check.sh` | Local test execution; filesystem mutations under test workspaces | Out of scope for product security, in scope for validation evidence |
 | Maintainer CI/release workflows | `.github/`, `buildish-release-tooling/` | GitHub Actions, release preparation, external tool downloads | Partially in scope for supply-chain assumptions; not an end-user runtime surface |
@@ -107,7 +107,7 @@ Component-family table:
 
 Primary trust boundary:
 
-- The runtime helper boundary is between untrusted local cache/downloaded bytes and the accepted `gradle/wrapper/gradle-wrapper.jar`. The helper accepts the JAR only after the expected SHA-256 checksum matches and the detached signature verifies against the pinned Gradle public key in an isolated temporary GPG home. *(documented)*
+- The runtime helper boundary is between untrusted local cache/downloaded bytes and the accepted `gradle/wrapper/gradle-wrapper.jar`. The helper accepts the JAR only after its digest matches the project-owned `buildishWrapperJarSha256Sum`, the Gradle-published checksum agrees with that pin, and the detached signature verifies against the pinned Gradle public key in an isolated temporary GPG home. *(documented)*
 
 Runtime helper data flow:
 
@@ -115,19 +115,22 @@ Runtime helper data flow:
 2. The helper reads `gradle/wrapper/gradle-wrapper.properties`. *(documented)*
 3. The helper accepts only canonical `https://services.gradle.org/distributions/gradle-<numeric-version>-bin.zip` or `...-all.zip` distribution URLs. *(documented)*
 4. The helper derives the Gradle version from that validated URL. *(documented)*
-5. The helper downloads or reuses per-version checksum and detached-signature files. *(documented)*
-6. The helper downloads or reuses `gradle-wrapper.jar`. *(documented)*
-7. The helper rejects malformed, oversized, symlinked, checksum-mismatched, or signature-mismatched artifacts. *(documented)*
-8. Only after validation does the launcher continue to Java/Gradle with the wrapper JAR in place. *(documented)*
+5. The helper requires exactly one canonical lowercase `buildishWrapperJarSha256Sum` in the reviewed project configuration. *(documented)*
+6. The helper downloads or reuses per-version checksum and detached-signature files. *(documented)*
+7. The upstream checksum must equal the project-owned pin before wrapper-JAR acceptance continues. *(documented)*
+8. The helper downloads or reuses `gradle-wrapper.jar`. *(documented)*
+9. The helper rejects malformed, oversized, symlinked, pin-mismatched, checksum-mismatched, or signature-mismatched artifacts. *(documented)*
+10. Only after validation does the launcher continue to Java/Gradle with the wrapper JAR in place. *(documented)*
 
 Installer data flow:
 
 1. The operator invokes `install.sh` or `install.ps1` with `--trusted-source-dir`. *(documented)*
 2. The installer resolves the target project and trusted source directory. *(documented)*
-3. It copies helper files from the trusted local directory into `gradle/`. *(documented)*
-4. It removes an existing regular `gradle/wrapper/gradle-wrapper.jar`. *(documented)*
-5. It patches `gradlew` / `gradlew.bat` at exact known anchors and edits `.gitignore`. *(documented)*
-6. It rejects symlink/reparse-point paths rather than following them. *(documented)*
+3. It requires one canonical project-owned wrapper-JAR pin before mutation. *(documented)*
+4. It copies helper files from the trusted local directory into `gradle/`. *(documented)*
+5. It removes an existing regular `gradle/wrapper/gradle-wrapper.jar`. *(documented)*
+6. It patches `gradlew` / `gradlew.bat` at exact known anchors and edits `.gitignore`. *(documented)*
+7. It rejects symlink/reparse-point paths rather than following them. *(documented)*
 
 Bootstrap data flow:
 
@@ -199,6 +202,7 @@ No-surprise side effects:
 | Release-rendered `bootstrap-install.*` | Not yet operationally published in this repository copy | Establishes verified remote installer delivery if rendered with pinned release URL and signing key material. | Planned/hardened path; publication is remaining release work. *(documented)* |
 | Native Windows GPG vs Git-for-Windows GPG | Native Windows GPG required | Git-for-Windows GPG is rejected; without native GPG, Windows helper verification fails. | Required for Windows `gradlew.bat`. *(documented)* |
 | Gradle wrapper `distributionSha256Sum` | Target-project dependent | Missing value weakens Gradle distribution ZIP pinning, but not wrapper-JAR verification. The init script warns if absent. | Caller responsibility; warning only. *(documented)* |
+| Buildish wrapper JAR `buildishWrapperJarSha256Sum` | Required project-owned lowercase SHA-256 | Binds the requested Gradle version to the exact accepted wrapper JAR. Missing, duplicate, malformed, or mismatched values fail closed. | Required reviewed project configuration. *(documented)* |
 | Future Gradle launcher shapes | Exact known anchors only | Unsupported shapes cause installer/init patch failures rather than best-effort mutation. | Fail closed pending explicit support. *(documented)* |
 
 No compile-time build flags change security properties; this project is distributed as scripts and documentation. *(inferred)*
@@ -207,7 +211,7 @@ No compile-time build flags change security properties; this project is distribu
 
 The project accepts these inputs:
 
-- Target project files: `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.properties`, `.gitignore`, and `gradle/` contents. *(documented)*
+- Target project files: `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.properties` including the project-owned wrapper-JAR pin, `.gitignore`, and `gradle/` contents. *(documented)*
 - Trusted local source-directory payloads passed to `install.*`. *(documented)*
 - Network payloads from Gradle, GitHub, and release asset hosting. *(documented)*
 - Environment variables for timeout, unsafe dev base URL, CI detection, and normal launcher state. *(documented)*
@@ -219,6 +223,7 @@ Per-parameter trust table:
 | --- | --- | --- | --- |
 | `buildish-no-gradle-wrapper-jar.sh` | `APP_HOME` inherited from `gradlew` | No, trusted launcher state after `gradlew` resolution | Do not let untrusted users replace launchers or helper files |
 | `buildish-no-gradle-wrapper-jar.sh` | `gradle-wrapper.properties` `distributionUrl` | Partially; target project maintainers can edit it, network attackers cannot | Treat project-file write access as trusted; use canonical Gradle distribution URLs |
+| POSIX and PowerShell runtime helpers | `gradle-wrapper.properties` `buildishWrapperJarSha256Sum` | No under the local-cache/network attacker model; it is reviewed project configuration | Update atomically with `distributionUrl`; use the Gradle-published Wrapper JAR checksum, not the distribution ZIP checksum |
 | `buildish-no-gradle-wrapper-jar.sh` | Cached `.sha256`, `.asc`, and `.jar` files under `gradle/wrapper/` | Yes for local cache corruption scenarios | Helper validates or rejects; caller must protect checkout from untrusted writers |
 | `buildish-no-gradle-wrapper-jar.sh` | Downloaded checksum and signature metadata | Yes, network bytes are untrusted | Helper enforces shape, size, checksum, and signature validation |
 | `buildish-no-gradle-wrapper-jar.sh` | Downloaded wrapper JAR | Yes, network bytes are untrusted | Helper enforces 10 MiB limit, expected checksum, and detached signature validation |
@@ -233,7 +238,7 @@ Per-parameter trust table:
 | `unsafe-dev-install.sh` / `unsafe-dev-install.ps1` | `--yes-i-know-this-is-unsafe` | Trusted user acknowledgement | Do not use unless blind-trust development flow is intended |
 | `unsafe-dev-install.sh` / `unsafe-dev-install.ps1` | `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` | Yes if environment is attacker-controlled | Do not use unsafe installers in untrusted or secret-bearing environments |
 | `unsafe-dev-install.sh` / `unsafe-dev-install.ps1` | Downloaded current-branch payloads | Yes | No validation is provided by design; do not use as secure path |
-| `buildish-no-gradle-wrapper-jar.init.gradle.kts` | Generated `gradlew` / `gradlew.bat` files from `Wrapper` task | Partially; Gradle version controls shape | Unsupported shapes fail; caller should update helper support for new Gradle patterns |
+| `buildish-no-gradle-wrapper-jar.init.gradle.kts` | Generated properties and launcher files from `Wrapper` task | Partially; Gradle version controls content/shape | Existing pin is preserved, never recalculated; update it in the same reviewed change when `distributionUrl` changes |
 
 Size, shape, and rate assumptions:
 
@@ -274,7 +279,8 @@ Attacker goals:
 
 | Property | Conditions | Violation symptom | Severity tier | Provenance |
 | --- | --- | --- | --- | --- |
-| Runtime helper accepts `gradle-wrapper.jar` only after expected SHA-256 match and detached signature verification against pinned Gradle key | Helper code and host tools are trusted; distribution URL is accepted canonical Gradle URL; pinned key remains valid | Malicious or corrupted JAR is accepted and Gradle starts | Security-critical | documented |
+| Runtime helper accepts `gradle-wrapper.jar` only after project-owned pin match, agreement with the Gradle-published checksum, and detached signature verification against the pinned Gradle key | Helper code, reviewed project configuration, and host tools are trusted; distribution URL is canonical; pinned key remains valid | Wrong-version, malicious, or corrupted JAR is accepted and Gradle starts | Security-critical | documented |
+| Project-owned wrapper-JAR pin is required and unambiguous | Exactly one lowercase 64-hex `buildishWrapperJarSha256Sum` is committed beside `distributionUrl` | Missing/malformed configuration or alternate parser interpretation bypasses version binding | Security-critical | documented |
 | Canonical Gradle distribution URL restriction | `distributionUrl` must match `https://services.gradle.org/distributions/gradle-<numeric-version>-(bin|all).zip` | Noncanonical URL controls metadata/JAR derivation | Security-critical | documented |
 | Gradle version is derived only from validated distribution URL | Wrapper properties are read by helper; regex accepts numeric versions only | Attacker controls version/source derivation independently of validated URL | Security-critical | documented |
 | Runtime metadata and JAR downloads fail closed on malformed, oversized, checksum-mismatched, or signature-mismatched content | Host tools operate correctly; limits are enforced | Build fails before Gradle starts | Security-critical | documented |
@@ -291,6 +297,7 @@ Attacker goals:
 | PowerShell helper download operations fail within explicit timeout bounds | Timeout env var is valid; .NET waits honor deadline | Hung helper waits indefinitely | Availability / hardening | documented |
 | Runtime helper prepends init-script arguments only when project-local init script exists | Launcher helper runs before Gradle | Missing/incorrect init injection prevents wrapper repatching | Correctness / hardening | documented |
 | Init script re-patches generated launchers after `Wrapper` task | Gradle launcher shape matches supported anchors | Wrapper regeneration silently removes helper invocation | Security-critical for sustained protection | documented |
+| Init script preserves but never recalculates `buildishWrapperJarSha256Sum` | Wrapper task starts from one valid reviewed pin | Gradle silently removes the pin or a network-derived replacement becomes trusted project configuration | Security-critical for sustained protection | documented |
 | Init script warns when `distributionSha256Sum` is missing | `Wrapper` task writes readable properties file | Missing distribution ZIP pin goes unnoticed | Hardening / operator warning | documented |
 | CI validation pins GitHub Actions by SHA and uses minimal permissions | Maintainer CI workflows are used as written | CI supply-chain or token exposure risk increases | Supply-chain hardening | documented |
 | CI verifies downloaded Gradle distribution ZIP against official SHA-256 file | CI bootstrap path uses repository workflow | CI runs with unverified Gradle distribution ZIP | Supply-chain hardening | documented |
@@ -324,6 +331,7 @@ False-friend properties:
 
 - `distributionUrl` validation authenticates the wrapper metadata source shape; it does not authenticate the Gradle distribution ZIP itself. Use `distributionSha256Sum` for that. *(documented)*
 - Retained `.sha256` files are expected checksums, not independent trust roots. The wrapper JAR must still pass detached-signature verification. *(documented)*
+- The Gradle-published `.sha256` side file does not establish the requested-version binding by itself. It must agree with the reviewed `buildishWrapperJarSha256Sum`. *(documented)*
 - `--trusted-source-dir` sounds like a safety control, but it is a statement about caller trust, not a validator for arbitrary directories. *(documented)*
 - The unsafe development installers contain acknowledgement and CI refusal checks, but those are guardrails, not cryptographic verification. *(documented)*
 - GitHub immutable releases are useful supply-chain hardening, but they do not replace client-side signature and checksum verification. *(documented)*
@@ -345,6 +353,7 @@ Well-known attack classes left to callers/operators:
 - Protect the target checkout, launcher scripts, helper scripts, Gradle build files, wrapper properties, and CI job workspace from untrusted writes. *(documented)*
 - Install a native Windows GnuPG for `gradlew.bat`; do not rely on Git-for-Windows bundled GPG. *(documented)*
 - Configure `distributionSha256Sum` for the Gradle distribution ZIP where distribution ZIP authenticity matters. *(documented)*
+- Commit exactly one reviewed `buildishWrapperJarSha256Sum` and update it in the same change as `distributionUrl`. *(documented)*
 - Treat checksum/signature mismatch errors as security failures unless independently explained. *(documented)*
 - Use release-rendered `bootstrap-install.*` scripts only after release automation has filled real URLs and pinned signing-key material. *(documented)*
 - Do not use `unsafe-dev-install.*` in CI, automation, or environments with secrets. *(documented)*
@@ -358,6 +367,7 @@ Well-known attack classes left to callers/operators:
 - Treating local cache corruption as impossible because the helper verifies downloads. Local corruption can still cause denial of service, even if accepted malicious JAR execution should fail. *(documented)*
 - Assuming this project protects against malicious Gradle build files. It does not; repository write access remains execution authority. *(documented)*
 - Treating missing `distributionSha256Sum` as covered by wrapper-JAR verification. The helper verifies `gradle-wrapper.jar`, not the distribution ZIP. *(documented)*
+- Treating a preserved `buildishWrapperJarSha256Sum` as automatically updated after a Wrapper version change. The init script preserves the old reviewed value and warns; maintainers must replace it explicitly. *(documented)*
 - Bypassing helper failure after a checksum/signature mismatch by manually dropping in a wrapper JAR. Investigate the mismatch or use independently verified artifacts. *(inferred)*
 - Running checked-in `bootstrap-install.*` template copies directly. They intentionally fail closed until release rendering. *(documented)*
 
@@ -365,6 +375,7 @@ Well-known attack classes left to callers/operators:
 
 - "Installer follows symlinks while patching target files" is not a finding for managed paths where `install.*` rejects symlinks/reparse points before writes. *(documented)*
 - "Wrapper cache can be locally corrupted" is not, by itself, an accepted-malicious-JAR vulnerability; the in-model security property is that corrupted cache contents fail validation before Gradle starts. *(documented)*
+- "An older correctly signed Gradle wrapper triplet can be renamed as a newer version" is not an accepted-JAR path when the reviewed project pin is intact; the upstream checksum disagrees with `buildishWrapperJarSha256Sum` and the helper fails before JAR acceptance. *(documented)*
 - "`--trusted-source-dir` allows arbitrary code if attacker-controlled" is `OUT-OF-MODEL: trusted-input` unless the report shows the project treats that argument as untrusted. *(documented)*
 - "`unsafe-dev-install.*` downloads unverified code" is `BY-DESIGN: property-disclaimed`; those scripts are intentionally unsafe and require acknowledgement. *(documented)*
 - "Checked-in `bootstrap-install.*` contains placeholder URLs/key material" is not executable insecure default behavior because the templates fail closed before use. *(documented)*

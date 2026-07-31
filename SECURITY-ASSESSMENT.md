@@ -36,13 +36,16 @@ pass:
 
 1. `distributionUrl` must use the canonical `https://services.gradle.org/distributions/...` shape.
 2. The Gradle version is derived only from the validated distribution URL.
-3. The authoritative wrapper checksum and detached signature are downloaded from
+3. The project must commit exactly one reviewed lowercase `buildishWrapperJarSha256Sum` for that
+   version.
+4. The upstream wrapper checksum and detached signature are downloaded from
    `services.gradle.org`.
-4. The wrapper JAR bytes are downloaded from the matching Gradle source tag on GitHub.
-5. The JAR must match the expected SHA-256 checksum.
-6. The detached signature must verify against pinned Gradle signing-key fingerprints in an isolated
+5. The downloaded checksum must agree with the project-owned pin.
+6. The wrapper JAR bytes are downloaded from the matching Gradle source tag on GitHub.
+7. The JAR must match the project-owned SHA-256 pin.
+8. The detached signature must verify against pinned Gradle signing-key fingerprints in an isolated
    temporary GPG home.
-7. Downloaded metadata and JAR files are written via temporary paths and only moved into place on
+9. Downloaded metadata and JAR files are written via temporary paths and only moved into place on
    success.
 
 That means poisoned cache content or a corrupted download should fail closed instead of being
@@ -114,8 +117,9 @@ No critical vulnerability was found in the normal helper runtime path for recrea
 The strongest security property in this repository is that the runtime helpers do not trust a
 cached or downloaded wrapper JAR unless it:
 
-1. matches the expected SHA-256 value, and
-2. verifies against a pinned Gradle signing key fingerprint in an isolated GPG home.
+1. matches the reviewed project-owned SHA-256 pin,
+2. agrees with Gradle's version-specific published checksum, and
+3. verifies against a pinned Gradle signing key fingerprint in an isolated GPG home.
 
 That substantially reduces the risk of accepting a poisoned `gradle-wrapper.jar` from the
 project-local cache or from the network.
@@ -264,7 +268,8 @@ Partially, but not in the way that would silently subvert trust.
 
 - An attacker with local write access can corrupt or replace cached files in `gradle/wrapper/`.
 - The helper will reject malformed checksum files, malformed signature files, and wrapper JARs
-  whose checksum or detached signature verification fails.
+  whose checksum disagrees with the reviewed project pin or whose detached signature verification
+  fails.
 - Therefore, persistent cache poisoning that results in an *accepted malicious* `gradle-wrapper.jar`
   does not appear feasible without one of these stronger assumptions:
   - compromise of the pinned Gradle signing key,
@@ -286,8 +291,8 @@ Yes, under the following conditions:
    `--trusted-source-dir` override.
 
 No arbitrary-code-execution path was found in the reviewed helper runtime logic that would allow an
-untrusted cached/downloaded wrapper JAR to be accepted without passing the checksum and
-detached-signature validation steps.
+untrusted cached/downloaded wrapper JAR to be accepted without passing the project pin, upstream
+checksum, and detached-signature validation steps.
 
 ### Is secret / credential stealing possible?
 
@@ -309,8 +314,9 @@ So the answer is:
 
 ## Overall conclusion
 
-The runtime verification design for `gradle-wrapper.jar` is strong and appears to prevent silent
-acceptance of poisoned cached JAR contents under the normal threat model.
+The runtime verification design for `gradle-wrapper.jar` binds the selected Gradle version to a
+reviewed project-owned digest and appears to prevent silent acceptance of poisoned or replayed
+cached JAR contents under the normal threat model.
 
 The most important remaining work is operationalizing the secure release-based
 `bootstrap-install.*` path by rendering and publishing release-specific copies with real signing

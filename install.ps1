@@ -70,7 +70,11 @@ while ($parsedArgIndex -lt $args.Count) {
 }
 
 $TrustedSourceDirectory = $parsedTrustedSourceDirectory
-$TargetDirectory = if ($parsedPositionalArgs.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($parsedPositionalArgs[0])) { $parsedPositionalArgs[0] } elseif (-not [string]::IsNullOrWhiteSpace($env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR)) { $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR } else { (Get-Location).Path }
+$TargetDirectory = if ($parsedPositionalArgs.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($parsedPositionalArgs[0])) {
+  $parsedPositionalArgs[0]
+} else {
+  (Get-Location).Path
+}
 
 # Use UTF-8 without a BOM when rewriting launcher and text files so the output
 # remains stable and acceptable to Gradle / shell tooling.
@@ -92,11 +96,11 @@ function Set-BuildishUtf8NoBomFileText {
 function Test-BuildishReparsePoint {
   param([string]$Path)
 
-  if (-not (Test-Path -LiteralPath $Path)) {
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  if ($null -eq $item) {
     return $false
   }
 
-  $item = Get-Item -LiteralPath $Path -Force
   return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
 }
 
@@ -109,6 +113,41 @@ function Assert-BuildishNotSymlink {
 
   if (Test-BuildishReparsePoint -Path $Path) {
     throw "$Label must not be a symbolic link: '$Path'."
+  }
+}
+
+function Assert-BuildishDirectory {
+  param(
+    [string]$Path,
+    [string]$Label
+  )
+
+  Assert-BuildishNotSymlink -Path $Path -Label $Label
+  if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+    throw "$Label must be a directory: '$Path'."
+  }
+}
+
+function Assert-BuildishRegularFile {
+  param(
+    [string]$Path,
+    [string]$Label
+  )
+
+  Assert-BuildishNotSymlink -Path $Path -Label $Label
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "$Label must be a regular file: '$Path'."
+  }
+}
+
+function Assert-BuildishRegularFileOrAbsent {
+  param(
+    [string]$Path,
+    [string]$Label
+  )
+
+  if ($null -ne (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue)) {
+    Assert-BuildishRegularFile -Path $Path -Label $Label
   }
 }
 
@@ -147,7 +186,7 @@ function Save-BuildishCopiedFile {
 
   Assert-BuildishNotSymlink -Path $Path -Label $Label
   Assert-BuildishNotSymlink -Path $SourcePath -Label "$Label source file"
-  $tempPath = New-BuildishInstallTempPath -Directory $GradleDirectory
+  $tempPath = New-BuildishInstallTempPath -Directory ([System.IO.Path]::GetDirectoryName($Path))
 
   try {
     [System.IO.File]::WriteAllBytes($tempPath, [System.IO.File]::ReadAllBytes($SourcePath))
@@ -170,10 +209,12 @@ function Save-BuildishToolFile {
 }
 
 function Install-BuildishHelperFiles {
+  param([string]$DestinationDirectory)
+
   $helperFiles = @(
-    @{ Path = (Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.sh'); FileName = 'buildish-no-gradle-wrapper-jar.sh'; Label = 'POSIX helper script' },
-    @{ Path = (Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.ps1'); FileName = 'buildish-no-gradle-wrapper-jar.ps1'; Label = 'PowerShell helper script' },
-    @{ Path = $GradleInitScriptPath; FileName = 'buildish-no-gradle-wrapper-jar.init.gradle.kts'; Label = 'Gradle init script' }
+    @{ Path = (Join-Path -Path $DestinationDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.sh'); FileName = 'buildish-no-gradle-wrapper-jar.sh'; Label = 'POSIX helper script' },
+    @{ Path = (Join-Path -Path $DestinationDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.ps1'); FileName = 'buildish-no-gradle-wrapper-jar.ps1'; Label = 'PowerShell helper script' },
+    @{ Path = (Join-Path -Path $DestinationDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.init.gradle.kts'); FileName = 'buildish-no-gradle-wrapper-jar.init.gradle.kts'; Label = 'Gradle init script' }
   )
 
   foreach ($helperFile in $helperFiles) {
@@ -289,38 +330,22 @@ function Assert-BuildishAnyExactLinePresent {
 }
 
 function Update-BuildishGradlewBat {
-  Replace-BuildishExactLineIfPresent -Path $GradlewBatPath -CurrentLine $GradlewBatHelperInvocation -Replacement $GradlewBatHelperBlock -Label 'gradlew.bat'
-  Add-BuildishBlockAfterAnyAnchor -Path $GradlewBatPath -InsertionBlock $GradlewBatHelperBlock -Label 'gradlew.bat' -Anchors @($GradlewBatAnchor)
+  param([string]$Path)
+
+  Replace-BuildishExactLineIfPresent -Path $Path -CurrentLine $GradlewBatHelperInvocation -Replacement $GradlewBatHelperBlock -Label 'gradlew.bat'
+  Add-BuildishBlockAfterAnyAnchor -Path $Path -InsertionBlock $GradlewBatHelperBlock -Label 'gradlew.bat' -Anchors @($GradlewBatAnchor)
   foreach ($executeLineReplacement in $GradlewBatSupportedExecuteLineReplacements) {
-    Replace-BuildishExactLineIfPresent -Path $GradlewBatPath -CurrentLine $executeLineReplacement.Current -Replacement $executeLineReplacement.Replacement -Label 'gradlew.bat'
+    Replace-BuildishExactLineIfPresent -Path $Path -CurrentLine $executeLineReplacement.Current -Replacement $executeLineReplacement.Replacement -Label 'gradlew.bat'
   }
-  Assert-BuildishAnyExactLinePresent -Path $GradlewBatPath -ExpectedLines @($GradlewBatSupportedExecuteLineReplacements | ForEach-Object { $_.Replacement }) -Label 'gradlew.bat'
-}
-
-# Remove only regular files. This is used to delete an existing wrapper JAR so the
-# next Gradle launch must recreate it through the helper's verified download path.
-function Remove-BuildishRegularFile {
-  param(
-    [string]$Path,
-    [string]$Label
-  )
-
-  if (-not (Test-Path -LiteralPath $Path)) {
-    return
-  }
-
-  Assert-BuildishNotSymlink -Path $Path -Label $Label
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    throw "$Label must be a regular file: '$Path'."
-  }
-
-  Remove-Item -LiteralPath $Path -Force
+  Assert-BuildishAnyExactLinePresent -Path $Path -ExpectedLines @($GradlewBatSupportedExecuteLineReplacements | ForEach-Object { $_.Replacement }) -Label 'gradlew.bat'
 }
 
 # Add ignore entries for the retained metadata side files while leaving projects
 # free to commit them explicitly if that suits their policy.
 function Update-BuildishGitignore {
-  $gitignorePath = Join-Path -Path $TargetDirectoryAbsolute -ChildPath '.gitignore'
+  param([string]$Path)
+
+  $gitignorePath = $Path
   $commentLine = '# Added by buildish-no-gradle-wrapper-jar'
   $entries = @(
     'gradle/wrapper/gradle-wrapper-*.sha256',
@@ -359,17 +384,54 @@ function Update-BuildishGitignore {
   Set-BuildishUtf8NoBomFileText -Path $gitignorePath -Content $builder.ToString()
 }
 
+function Restore-BuildishInstallTransaction {
+  param([object[]]$Entries)
+
+  for ($entryIndex = $Entries.Count - 1; $entryIndex -ge 0; $entryIndex--) {
+    $entry = $Entries[$entryIndex]
+    if (-not $entry.Prepared) {
+      continue
+    }
+
+    Remove-Item -LiteralPath $entry.Destination -Force -ErrorAction SilentlyContinue
+    if ($entry.Existed -and (Test-Path -LiteralPath $entry.Backup -PathType Leaf)) {
+      Move-Item -LiteralPath $entry.Backup -Destination $entry.Destination -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Backup-BuildishInstallTransaction {
+  param([object[]]$Entries)
+
+  foreach ($entry in $Entries) {
+    if ($null -ne (Get-Item -LiteralPath $entry.Destination -Force -ErrorAction SilentlyContinue)) {
+      Move-Item -LiteralPath $entry.Destination -Destination $entry.Backup -Force
+      $entry.Existed = $true
+    }
+    $entry.Prepared = $true
+  }
+}
+
+function Publish-BuildishInstallTransaction {
+  param([object[]]$Entries)
+
+  foreach ($entry in $Entries) {
+    if ($null -ne $entry.Stage) {
+      Move-Item -LiteralPath $entry.Stage -Destination $entry.Destination -Force
+    }
+  }
+}
+
 try {
   # Installer entrypoint validation and derived project-local paths.
   if ($parsedPositionalArgs.Count -gt 1) {
     throw 'Expected zero or one positional argument: the target project directory.'
   }
-  if (-not (Test-Path -LiteralPath $TargetDirectory -PathType Container)) {
-    throw "Target directory does not exist: '$TargetDirectory'."
-  }
+  Assert-BuildishDirectory -Path $TargetDirectory -Label 'Target project directory'
   if ([string]::IsNullOrWhiteSpace($TrustedSourceDirectory)) {
     throw '--trusted-source-dir is required. This installer only stages already-trusted local files.'
   }
+  Assert-BuildishDirectory -Path $TrustedSourceDirectory -Label 'Trusted local source directory'
 
   $TargetDirectoryAbsolute = (Resolve-Path -LiteralPath $TargetDirectory).Path
   $TrustedSourceDirectoryAbsolute = (Resolve-Path -LiteralPath $TrustedSourceDirectory).Path
@@ -380,6 +442,9 @@ try {
   $GradlewPath = Join-Path -Path $TargetDirectoryAbsolute -ChildPath 'gradlew'
   $GradlewBatPath = Join-Path -Path $TargetDirectoryAbsolute -ChildPath 'gradlew.bat'
   $GradleInitScriptPath = Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.init.gradle.kts'
+  $HelperShPath = Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.sh'
+  $HelperPs1Path = Join-Path -Path $GradleDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.ps1'
+  $GitignorePath = Join-Path -Path $TargetDirectoryAbsolute -ChildPath '.gitignore'
 
   # Windows launcher patch structure: first capture helper-emitted arguments into
   # an environment variable, then splice that variable into the final Java line.
@@ -406,10 +471,52 @@ if errorlevel 1 goto fail
     @{ Current = $_; Replacement = (Add-BuildishBatchHelperArgumentsToExecuteLine -ExecuteLine $_) }
   })
 
-  if (-not (Test-Path -LiteralPath $GradlePropertiesPath -PathType Leaf)) {
+  Assert-BuildishDirectory -Path $TargetDirectoryAbsolute -Label 'Target project directory'
+  Assert-BuildishDirectory -Path $GradleDirectory -Label 'Gradle directory'
+  Assert-BuildishDirectory -Path $WrapperDirectory -Label 'Gradle wrapper directory'
+  if ($null -eq (Get-Item -LiteralPath $GradlePropertiesPath -Force -ErrorAction SilentlyContinue)) {
     throw "Gradle wrapper properties file was not found at '$GradlePropertiesPath'. Run this installer from a Gradle project root or pass that directory as the only argument."
   }
-  Assert-BuildishNotSymlink -Path $GradlePropertiesPath -Label 'gradle-wrapper.properties'
+  Assert-BuildishRegularFile -Path $GradlePropertiesPath -Label 'gradle-wrapper.properties'
+  Assert-BuildishRegularFile -Path $GradlewPath -Label 'gradlew'
+  Assert-BuildishRegularFile -Path $GradlewBatPath -Label 'gradlew.bat'
+  Assert-BuildishRegularFileOrAbsent -Path $GradleWrapperJarPath -Label 'gradle-wrapper.jar'
+  Assert-BuildishRegularFileOrAbsent -Path $HelperShPath -Label 'POSIX helper script'
+  Assert-BuildishRegularFileOrAbsent -Path $HelperPs1Path -Label 'PowerShell helper script'
+  Assert-BuildishRegularFileOrAbsent -Path $GradleInitScriptPath -Label 'Gradle init script'
+  Assert-BuildishRegularFileOrAbsent -Path $GitignorePath -Label '.gitignore'
+
+  $sourceFiles = @(
+    @{ Path = (Join-Path -Path $TrustedSourceDirectoryAbsolute -ChildPath 'buildish-no-gradle-wrapper-jar.sh'); Label = 'POSIX helper source file' },
+    @{ Path = (Join-Path -Path $TrustedSourceDirectoryAbsolute -ChildPath 'buildish-no-gradle-wrapper-jar.ps1'); Label = 'PowerShell helper source file' },
+    @{ Path = (Join-Path -Path $TrustedSourceDirectoryAbsolute -ChildPath 'buildish-no-gradle-wrapper-jar.init.gradle.kts'); Label = 'Gradle init-script source file' }
+  )
+  foreach ($sourceFile in $sourceFiles) {
+    Assert-BuildishRegularFile -Path $sourceFile.Path -Label $sourceFile.Label
+  }
+
+  $distributionLine = (Select-String -Path $GradlePropertiesPath -CaseSensitive -Pattern '^distributionUrl=' | Select-Object -First 1).Line
+  if ([string]::IsNullOrWhiteSpace($distributionLine)) {
+    throw 'Gradle wrapper properties file is missing a distributionUrl entry.'
+  }
+  $distributionUrl = $distributionLine.Substring('distributionUrl='.Length).Replace('\:', ':')
+  if (-not [regex]::IsMatch($distributionUrl, '^https://services\.gradle\.org/distributions/gradle-[0-9]+(?:\.[0-9]+){1,2}-(?:bin|all)\.zip$')) {
+    throw 'distributionUrl must be a canonical HTTPS services.gradle.org URL ending in gradle-<version>-bin.zip or gradle-<version>-all.zip.'
+  }
+
+  $wrapperPinName = 'buildishWrapperJarSha256Sum'
+  $wrapperPinMatches = @(Select-String -Path $GradlePropertiesPath -CaseSensitive -Pattern "^$wrapperPinName=")
+  if ($wrapperPinMatches.Count -eq 0) {
+    throw "Gradle wrapper properties file is missing the required $wrapperPinName entry. Add the reviewed Gradle wrapper JAR SHA-256 for the distributionUrl version before installing."
+  }
+  if ($wrapperPinMatches.Count -ne 1) {
+    throw "Gradle wrapper properties file contains duplicate $wrapperPinName entries. Keep exactly one reviewed lowercase SHA-256 value."
+  }
+  $wrapperPinValue = $wrapperPinMatches[0].Line.Substring("$wrapperPinName=".Length)
+  if ($wrapperPinValue -cnotmatch '^[0-9a-f]{64}$') {
+    throw "$wrapperPinName must be exactly one lowercase 64-character SHA-256 value."
+  }
+
   # The helper verifies `gradle-wrapper.jar`, but it does not make Gradle start
   # verifying the distribution ZIP automatically. Emit a prominent installer-time
   # warning so adopters notice the missing checksum pin immediately.
@@ -417,16 +524,51 @@ if errorlevel 1 goto fail
     Write-Warning "$BuildishToolName install: WARNING: '$GradlePropertiesPath' does not define distributionSha256Sum. Gradle itself will not pin the distribution ZIP checksum during wrapper downloads; this helper continues, but it only verifies gradle-wrapper.jar."
   }
 
-  # Stage helper files before patching launchers so every inserted path points to
-  # an existing project-local script.
-  Install-BuildishHelperFiles
-  Remove-BuildishRegularFile -Path $GradleWrapperJarPath -Label 'gradle-wrapper.jar'
+  # Produce and validate all outputs before moving any managed project file.
+  $transactionDirectory = Join-Path -Path $TargetDirectoryAbsolute -ChildPath ".buildish-no-gradle-wrapper-jar-transaction.$([System.IO.Path]::GetRandomFileName())"
+  [void][System.IO.Directory]::CreateDirectory($transactionDirectory)
+  $transactionActive = $false
+  $transactionEntries = @()
 
-  # Patch the launchers and then assert that a supported final batch execute line
-  # is present so new unsupported launcher shapes fail loudly during install.
-  Add-BuildishBlockAfterAnyAnchor -Path $GradlewPath -InsertionBlock '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' -Label 'gradlew' -Anchors @($GradlewCurrentAnchor, $GradlewOldAnchor)
-  Update-BuildishGradlewBat
-  Update-BuildishGitignore
+  try {
+    $stagedGradlewPath = Join-Path -Path $transactionDirectory -ChildPath 'gradlew'
+    $stagedGradlewBatPath = Join-Path -Path $transactionDirectory -ChildPath 'gradlew.bat'
+    $stagedGitignorePath = Join-Path -Path $transactionDirectory -ChildPath 'gitignore'
+    [System.IO.File]::Copy($GradlewPath, $stagedGradlewPath, $true)
+    [System.IO.File]::Copy($GradlewBatPath, $stagedGradlewBatPath, $true)
+    if (Test-Path -LiteralPath $GitignorePath -PathType Leaf) {
+      [System.IO.File]::Copy($GitignorePath, $stagedGitignorePath, $true)
+    } else {
+      Set-BuildishUtf8NoBomFileText -Path $stagedGitignorePath -Content ''
+    }
+    Install-BuildishHelperFiles -DestinationDirectory $transactionDirectory
+
+    Add-BuildishBlockAfterAnyAnchor -Path $stagedGradlewPath -InsertionBlock '. "${APP_HOME}/gradle/buildish-no-gradle-wrapper-jar.sh"' -Label 'gradlew' -Anchors @($GradlewCurrentAnchor, $GradlewOldAnchor)
+    Update-BuildishGradlewBat -Path $stagedGradlewBatPath
+    Update-BuildishGitignore -Path $stagedGitignorePath
+
+    $transactionEntries = @(
+      [pscustomobject]@{ Destination = $HelperShPath; Stage = (Join-Path -Path $transactionDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.sh'); Backup = (Join-Path -Path $transactionDirectory -ChildPath 'backup.helper-sh'); Existed = $false; Prepared = $false },
+      [pscustomobject]@{ Destination = $HelperPs1Path; Stage = (Join-Path -Path $transactionDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.ps1'); Backup = (Join-Path -Path $transactionDirectory -ChildPath 'backup.helper-ps1'); Existed = $false; Prepared = $false },
+      [pscustomobject]@{ Destination = $GradleInitScriptPath; Stage = (Join-Path -Path $transactionDirectory -ChildPath 'buildish-no-gradle-wrapper-jar.init.gradle.kts'); Backup = (Join-Path -Path $transactionDirectory -ChildPath 'backup.helper-init'); Existed = $false; Prepared = $false },
+      [pscustomobject]@{ Destination = $GradlewPath; Stage = $stagedGradlewPath; Backup = (Join-Path -Path $transactionDirectory -ChildPath 'backup.gradlew'); Existed = $false; Prepared = $false },
+      [pscustomobject]@{ Destination = $GradlewBatPath; Stage = $stagedGradlewBatPath; Backup = (Join-Path -Path $transactionDirectory -ChildPath 'backup.gradlew-bat'); Existed = $false; Prepared = $false },
+      [pscustomobject]@{ Destination = $GitignorePath; Stage = $stagedGitignorePath; Backup = (Join-Path -Path $transactionDirectory -ChildPath 'backup.gitignore'); Existed = $false; Prepared = $false },
+      [pscustomobject]@{ Destination = $GradleWrapperJarPath; Stage = $null; Backup = (Join-Path -Path $transactionDirectory -ChildPath 'backup.wrapper-jar'); Existed = $false; Prepared = $false }
+    )
+
+    $transactionActive = $true
+    Backup-BuildishInstallTransaction -Entries $transactionEntries
+    Publish-BuildishInstallTransaction -Entries $transactionEntries
+    $transactionActive = $false
+  } catch {
+    if ($transactionActive) {
+      Restore-BuildishInstallTransaction -Entries $transactionEntries
+    }
+    throw
+  } finally {
+    Remove-Item -LiteralPath $transactionDirectory -Recurse -Force -ErrorAction SilentlyContinue
+  }
 
   Write-Host "$BuildishToolName install: Installed helper files into '$GradleDirectory' and updated launcher scripts in '$TargetDirectoryAbsolute'."
 } catch {

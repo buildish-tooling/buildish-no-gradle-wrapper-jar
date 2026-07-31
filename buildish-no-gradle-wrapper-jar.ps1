@@ -23,7 +23,8 @@ This helper is invoked from `gradlew.bat` after `%APP_HOME%` has been resolved.
 High-level behavior:
   1. Optionally emit a project-local `--init-script ...` argument fragment so the
      wrapper update path keeps the launcher patches installed by this tool.
-  2. Read `gradle-wrapper.properties` to determine the requested Gradle version.
+  2. Read `gradle-wrapper.properties` to determine the requested Gradle version
+     and its project-reviewed wrapper-JAR digest pin.
   3. Ensure the detached-signature metadata files for that version exist.
   4. Verify any existing `gradle-wrapper.jar` against the expected checksum and
      the pinned Gradle public signing key.
@@ -336,6 +337,29 @@ function Get-BuildishNoGradleWrapperJarInjectedInitScriptArguments {
   }
 
   return "--init-script $(ConvertTo-BuildishWindowsCommandLineArgument -Argument $InitScriptPath)"
+}
+
+# Read the project-owned version-to-artifact binding. Exactly one canonical
+# lowercase digest is required so Java-properties ambiguity cannot select a
+# different value than the helper reviewed.
+function Get-BuildishNoGradleWrapperJarProjectSha256Pin {
+  param([string]$PropertiesPath)
+
+  $propertyName = 'buildishWrapperJarSha256Sum'
+  $matches = @(Select-String -Path $PropertiesPath -CaseSensitive -Pattern "^$propertyName=")
+  if ($matches.Count -eq 0) {
+    throw "Gradle wrapper properties file is missing the required $propertyName entry. Add the reviewed Gradle wrapper JAR SHA-256 for the distributionUrl version."
+  }
+  if ($matches.Count -ne 1) {
+    throw "Gradle wrapper properties file contains duplicate $propertyName entries. Keep exactly one reviewed lowercase SHA-256 value."
+  }
+
+  $propertyValue = $matches[0].Line.Substring("$propertyName=".Length)
+  if ($propertyValue -cnotmatch '^[0-9a-f]{64}$') {
+    throw "$propertyName must be exactly one lowercase 64-character SHA-256 value."
+  }
+
+  return $propertyValue
 }
 
 # Read, validate, normalize, and return the expected SHA-256 value from a cached
@@ -652,6 +676,8 @@ try {
     throw 'distributionUrl must be a canonical HTTPS services.gradle.org URL ending in gradle-<version>-bin.zip or gradle-<version>-all.zip.'
   }
 
+  $ProjectWrapperSha256 = Get-BuildishNoGradleWrapperJarProjectSha256Pin -PropertiesPath $GradlePropertiesPath
+
   $GradleDistributionVersion = $distributionMatch.Groups[1].Value
   $versionSegments = $GradleDistributionVersion.Split('.')
   # Gradle Git tags use three numeric segments, so normalize `8.3` to `8.3.0`
@@ -674,7 +700,11 @@ try {
   # Metadata is cached project-locally so repeated runs can validate an existing
   # wrapper JAR without always redownloading the side files.
   Ensure-BuildishNoGradleWrapperJarMetadataFiles
-  $ExpectedWrapperSha256 = Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $GradleWrapperSha256Path
+  $upstreamWrapperSha256 = Get-BuildishNoGradleWrapperJarExpectedSha256 -Path $GradleWrapperSha256Path
+  if ($upstreamWrapperSha256 -cne $ProjectWrapperSha256) {
+    throw "buildishWrapperJarSha256Sum does not match the Gradle-published wrapper JAR checksum for version '$GradleDistributionVersion'. Review distributionUrl and the committed pin together."
+  }
+  $ExpectedWrapperSha256 = $ProjectWrapperSha256
 
   # Fast path: if the current wrapper JAR already matches the expected checksum
   # and validates against the detached signature, keep it.

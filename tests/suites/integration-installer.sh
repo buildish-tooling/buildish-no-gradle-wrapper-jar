@@ -16,6 +16,23 @@
 # Installer-focused scenarios for tests/integration.sh. The entrypoint sources
 # this after the shared helper libraries.
 
+# Keep the reviewed-install examples aligned with this standalone repository's
+# actual root-level installers rather than the former monorepo-only tools path.
+exercise_standalone_installation_documentation_contract() {
+  docs_path=$TOOL_DIR/docs/_index.md
+
+  log 'checking standalone reviewed-install documentation contract'
+  if grep -Fq './tools/buildish-no-gradle-wrapper-jar/install.' "$docs_path"; then
+    fail 'reviewed-install docs still contain the former monorepo-only installer path.'
+  fi
+  grep -Fq 'bash "$tool_dir/install.sh" --trusted-source-dir "$tool_dir" "$project_dir"' "$docs_path" ||
+    fail 'reviewed-install docs do not show the standalone POSIX installer contract.'
+  grep -Fq '"$ToolDirectory\install.ps1" --trusted-source-dir $ToolDirectory $ProjectDirectory' "$docs_path" ||
+    fail 'reviewed-install docs do not show the standalone PowerShell installer contract.'
+  grep -Fq 'buildishWrapperJarSha256Sum=<reviewed lowercase 64-character Wrapper JAR SHA-256>' "$docs_path" ||
+    fail 'reviewed-install docs do not describe the required project-owned wrapper-JAR digest pin.'
+}
+
 # Exercise the shared output normalizer itself so future assertion cleanups do
 # not regress either the PowerShell or plain-Linux output contracts.
 exercise_output_normalization_contract() {
@@ -100,6 +117,185 @@ exercise_installer_requires_trusted_source_dir_failure() {
 
   assert_last_command_failed "$installer_kind installer unexpectedly succeeded without --trusted-source-dir."
   assert_last_output_contains 'trusted-source-dir is required' "$installer_kind installer failure output did not explain that --trusted-source-dir is mandatory."
+}
+
+# The installer must reject projects that have not established the reviewed
+# version-to-wrapper-JAR binding before it removes the generated JAR or patches
+# launchers.
+exercise_installer_requires_wrapper_jar_pin() {
+  project_dir=$1
+  installer_kind=$2
+  properties_path=$project_dir/gradle/wrapper/gradle-wrapper.properties
+
+  log "exercising $installer_kind installer missing wrapper-JAR pin failure in '$project_dir'"
+  gradle_init_fixture "$project_dir"
+  remove_wrapper_property "$properties_path" buildishWrapperJarSha256Sum
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_failed "$installer_kind installer unexpectedly succeeded without buildishWrapperJarSha256Sum."
+  assert_last_output_contains 'missing the required buildishWrapperJarSha256Sum entry' "$installer_kind installer failure did not explain the required wrapper-JAR pin."
+  [ -f "$project_dir/gradle/wrapper/gradle-wrapper.jar" ] || fail "$installer_kind installer removed gradle-wrapper.jar before validating the required wrapper-JAR pin."
+  assert_helper_files_absent "$project_dir"
+}
+
+# Exercise the documented current-directory default with the former PowerShell-
+# only environment fallback set, so inherited process state cannot redirect an
+# installation when the caller omits the optional positional target.
+exercise_powershell_installer_ignores_target_environment_variable() {
+  current_project_dir=$1
+  environment_project_dir=$2
+
+  log "exercising PowerShell installer current-directory default in '$current_project_dir'"
+  gradle_init_fixture "$current_project_dir"
+  cp -R "$current_project_dir" "$environment_project_dir"
+
+  output_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-test.XXXXXX")
+  set +e
+  (
+    cd "$current_project_dir"
+    BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR=$environment_project_dir \
+      pwsh -NoLogo -NoProfile -File "$TOOL_DIR/install.ps1" --trusted-source-dir "$TOOL_DIR"
+  ) >"$output_file" 2>&1
+  CAPTURED_STATUS=$?
+  set -e
+  store_captured_output_from_file "$output_file"
+  rm -f "$output_file"
+
+  assert_last_command_succeeded 'PowerShell installer failed when using the current-directory target default.'
+  assert_helper_files "$current_project_dir"
+  assert_helper_files_absent "$environment_project_dir"
+  [ -e "$environment_project_dir/gradle/wrapper/gradle-wrapper.jar" ] || fail 'PowerShell installer followed BUILDISH_NO_GRADLE_WRAPPER_JAR_TARGET_DIR and modified the wrong project.'
+}
+
+# Run each installer repeatedly against an already patched CRLF batch launcher.
+# This catches logical-line checks that accidentally include the carriage return
+# and append another helper block on every installation.
+exercise_installer_crlf_idempotence() {
+  source_project_dir=$1
+  project_dir=$2
+  installer_kind=$3
+  gradlew_bat_path=$project_dir/gradlew.bat
+  first_install_snapshot=$project_dir/gradlew.bat.after-first-install
+
+  log "exercising $installer_kind installer CRLF idempotence in '$project_dir'"
+  copy_project_fixture "$source_project_dir" "$project_dir"
+  python3 - <<'PY' "$gradlew_bat_path"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+path.write_bytes(data)
+PY
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_succeeded "$installer_kind installer failed on the first CRLF idempotency run."
+  cp "$gradlew_bat_path" "$first_install_snapshot"
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_succeeded "$installer_kind installer failed on the second CRLF idempotency run."
+  cmp -s "$first_install_snapshot" "$gradlew_bat_path" || fail "$installer_kind installer changed gradlew.bat on its second CRLF installation."
+  assert_file_exact_line_count "$gradlew_bat_path" 'set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=%*' 1 "$installer_kind installer duplicated the helper block in a CRLF gradlew.bat."
+  rm -f "$first_install_snapshot"
+}
+
+# Preserve the complete existing mode rather than collapsing launchers and
+# .gitignore to the mode chosen for an installer temporary file.
+exercise_posix_installer_mode_preservation() {
+  source_project_dir=$1
+  project_dir=$2
+
+  log "exercising POSIX installer mode preservation in '$project_dir'"
+  copy_project_fixture "$source_project_dir" "$project_dir"
+  chmod 0711 "$project_dir/gradlew"
+  chmod 0640 "$project_dir/gradlew.bat"
+  chmod 0644 "$project_dir/.gitignore"
+
+  run_posix_installer_capture "$project_dir"
+  assert_last_command_succeeded 'POSIX installer failed during the mode-preservation scenario.'
+  python3 - <<'PY' "$project_dir/gradlew" "$project_dir/gradlew.bat" "$project_dir/.gitignore" || fail 'POSIX installer did not preserve launcher or .gitignore modes.'
+from pathlib import Path
+import stat
+import sys
+
+expected = (0o711, 0o640, 0o644)
+actual = tuple(stat.S_IMODE(Path(path).stat().st_mode) for path in sys.argv[1:])
+raise SystemExit(0 if actual == expected else 1)
+PY
+}
+
+# Force a late launcher-shape validation failure and prove that helpers, the
+# wrapper JAR, launchers, and .gitignore remain byte-for-byte unchanged.
+exercise_installer_unsupported_launcher_transaction() {
+  source_project_dir=$1
+  project_dir=$2
+  installer_kind=$3
+  snapshot_dir=$project_dir.before-install
+
+  log "exercising $installer_kind installer unchanged-on-failure transaction in '$project_dir'"
+  copy_project_fixture "$source_project_dir" "$project_dir"
+  python3 - <<'PY' "$project_dir/gradlew.bat"
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_bytes(
+    b'for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi\r\n'
+    b'unsupported-gradlew-bat-execute-line\r\n'
+)
+PY
+  copy_project_fixture "$project_dir" "$snapshot_dir"
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_failed "$installer_kind installer unexpectedly accepted an unsupported gradlew.bat execute line."
+  assert_last_output_contains 'Unable to apply the expected update to gradlew.bat' "$installer_kind installer failure did not identify the unsupported gradlew.bat shape."
+  diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "$installer_kind installer changed the project despite failing launcher preflight."
+}
+
+# Deny the final wrapper-JAR backup after the other managed destinations have
+# already been moved into the transaction. This exercises actual rollback, not
+# only the complete-output preflight path above.
+exercise_installer_late_backup_rollback() {
+  source_project_dir=$1
+  project_dir=$2
+  installer_kind=$3
+  snapshot_dir=$project_dir.before-install
+  wrapper_dir=$project_dir/gradle/wrapper
+
+  log "exercising $installer_kind installer late-backup rollback in '$project_dir'"
+  copy_project_fixture "$source_project_dir" "$project_dir"
+  [ -f "$wrapper_dir/gradle-wrapper.jar" ] || fail "$installer_kind rollback fixture is missing gradle-wrapper.jar."
+  chmod 0555 "$wrapper_dir"
+  copy_project_fixture "$project_dir" "$snapshot_dir"
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  chmod 0755 "$wrapper_dir" "$snapshot_dir/gradle/wrapper"
+  assert_last_command_failed "$installer_kind installer unexpectedly succeeded when the wrapper-JAR backup was denied."
+  diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "$installer_kind installer did not restore the complete project after a late backup failure."
+  if find "$project_dir" -maxdepth 1 -type d -name '.buildish-no-gradle-wrapper-jar-transaction.*' | grep -q .; then
+    fail "$installer_kind installer left a transaction directory after rollback."
+  fi
+
+}
+
+# Redirect the managed Gradle directory through a symlink and prove both
+# installers reject it before touching the external directory.
+exercise_installer_managed_ancestor_link_rejection() {
+  source_project_dir=$1
+  project_dir=$2
+  installer_kind=$3
+  external_gradle_dir=$project_dir.external-gradle
+  external_snapshot_dir=$project_dir.external-gradle-before-install
+
+  log "exercising $installer_kind installer managed ancestor-link rejection in '$project_dir'"
+  copy_project_fixture "$source_project_dir" "$project_dir"
+  mv "$project_dir/gradle" "$external_gradle_dir"
+  ln -s "$external_gradle_dir" "$project_dir/gradle"
+  copy_project_fixture "$external_gradle_dir" "$external_snapshot_dir"
+
+  "run_${installer_kind}_installer_capture" "$project_dir"
+  assert_last_command_failed "$installer_kind installer unexpectedly followed a symlinked Gradle directory."
+  assert_last_output_contains 'Gradle directory must not be a symbolic link' "$installer_kind installer failure did not identify the symlinked Gradle directory."
+  diff -r "$external_snapshot_dir" "$external_gradle_dir" >/dev/null || fail "$installer_kind installer modified files through a symlinked Gradle directory."
 }
 
 # Exercise the unsafe-dev installer acknowledgement guard so the dangerous flow
@@ -208,13 +404,22 @@ exercise_wrapper_update_to_version() {
   initial_version=$(extract_gradle_version "$project_dir")
   [ -n "$initial_version" ] || fail 'unable to extract the initial Gradle version after install.sh.'
   assert_metadata_for_version "$project_dir" "$initial_version"
+  properties_path=$project_dir/gradle/wrapper/gradle-wrapper.properties
+  previous_wrapper_pin=$(sed -n 's/^buildishWrapperJarSha256Sum=//p' "$properties_path")
 
   log "upgrading wrapper in '$project_dir' from '$initial_version' to '$target_version'"
   run_wrapper_capture "$project_dir" wrapper --gradle-version "$target_version" --distribution-type bin
   assert_last_command_succeeded 'Gradle wrapper update failed during the wrapper exercise.'
   assert_init_distribution_sha_warning_output 'Gradle init script'
+  assert_last_output_contains 'was only preserved; it was not recalculated' 'Gradle init script did not explain that a version change requires a reviewed wrapper-JAR pin update.'
   updated_version=$(extract_gradle_version "$project_dir")
   [ "$updated_version" = "$target_version" ] || fail "expected updated Gradle version '$target_version' but found '$updated_version'."
+  preserved_wrapper_pin=$(sed -n 's/^buildishWrapperJarSha256Sum=//p' "$properties_path")
+  [ "$preserved_wrapper_pin" = "$previous_wrapper_pin" ] || fail 'Gradle init script did not preserve the reviewed wrapper-JAR pin across Wrapper task property regeneration.'
+  updated_wrapper_pin=$(fetch_gradle_wrapper_checksum "$updated_version")
+  set_wrapper_property "$properties_path" buildishWrapperJarSha256Sum "$updated_wrapper_pin"
+  run_wrapper_capture "$project_dir" wrapper --gradle-version "$target_version" --distribution-type bin
+  assert_last_command_succeeded 'Second Gradle wrapper update pass failed after installing the reviewed wrapper-JAR pin.'
   assert_launcher_patches "$project_dir"
 
   log "verifying upgraded helper for '$project_dir' at Gradle '$updated_version'"
@@ -292,6 +497,7 @@ run_installer_suite() {
   powershell_project_dir=$3
 
   log "starting installer suite (test_root='$test_root')"
+  exercise_standalone_installation_documentation_contract
   exercise_output_normalization_contract
   exercise_launcher_patch_contract_consistency
   exercise_wrapper_update_to_version "$posix_project_dir" '' "$UPDATED_GRADLE_VERSION"
@@ -300,6 +506,17 @@ run_installer_suite() {
   exercise_installer_missing_properties_failure "$test_root/powershell-installer-missing-properties" powershell
   exercise_installer_requires_trusted_source_dir_failure "$test_root/posix-installer-requires-trusted-source-dir" posix
   exercise_installer_requires_trusted_source_dir_failure "$test_root/powershell-installer-requires-trusted-source-dir" powershell
+  exercise_installer_requires_wrapper_jar_pin "$test_root/posix-installer-requires-wrapper-pin" posix
+  exercise_installer_requires_wrapper_jar_pin "$test_root/powershell-installer-requires-wrapper-pin" powershell
+  exercise_powershell_installer_ignores_target_environment_variable "$test_root/powershell-installer-current-directory" "$test_root/powershell-installer-environment-directory"
+  exercise_installer_crlf_idempotence "$powershell_project_dir" "$test_root/posix-installer-crlf-idempotence" posix
+  exercise_installer_crlf_idempotence "$powershell_project_dir" "$test_root/powershell-installer-crlf-idempotence" powershell
+  exercise_posix_installer_mode_preservation "$powershell_project_dir" "$test_root/posix-installer-mode-preservation"
+  exercise_installer_unsupported_launcher_transaction "$powershell_project_dir" "$test_root/posix-installer-transaction-failure" posix
+  exercise_installer_unsupported_launcher_transaction "$powershell_project_dir" "$test_root/powershell-installer-transaction-failure" powershell
+  exercise_installer_late_backup_rollback "$powershell_project_dir" "$test_root/posix-installer-rollback" posix
+  exercise_installer_managed_ancestor_link_rejection "$powershell_project_dir" "$test_root/posix-installer-ancestor-link" posix
+  exercise_installer_managed_ancestor_link_rejection "$powershell_project_dir" "$test_root/powershell-installer-ancestor-link" powershell
   exercise_unsafe_dev_installer_requires_acknowledgement_failure "$test_root/posix-unsafe-dev-requires-ack" posix
   exercise_unsafe_dev_installer_requires_acknowledgement_failure "$test_root/powershell-unsafe-dev-requires-ack" powershell
   exercise_unsafe_dev_installer_ci_barrier_failure "$test_root/posix-unsafe-dev-ci-barrier" posix

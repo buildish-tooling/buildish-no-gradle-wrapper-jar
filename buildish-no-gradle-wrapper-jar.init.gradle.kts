@@ -15,6 +15,13 @@
  */
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import org.gradle.api.GradleException
 import org.gradle.api.tasks.wrapper.Wrapper
 
@@ -83,6 +90,7 @@ fun patchBatchExecuteLine(currentLine: String): String {
 
 val batchExecuteLineReplacements =
   batchExecuteLines.map { currentLine -> currentLine to patchBatchExecuteLine(currentLine) }
+val buildishWrapperJarSha256Property = "buildishWrapperJarSha256Sum"
 
 // Preserve the target file's original newline style so Gradle keeps emitting the
 // script format expected on each platform.
@@ -96,14 +104,53 @@ fun hasConfiguredProperty(line: String, key: String): Boolean {
   return normalizedLine.substringAfter('=', "").isNotBlank()
 }
 
+fun requireSinglePropertyValue(propertiesFile: File, key: String): String {
+  val values =
+    propertiesFile.readLines().filter { line -> line.startsWith("$key=") }.map { line -> line.substringAfter('=') }
+  if (values.isEmpty()) {
+    throw GradleException("'${propertiesFile.absolutePath}' is missing the required $key entry.")
+  }
+  if (values.size != 1) {
+    throw GradleException("'${propertiesFile.absolutePath}' contains duplicate $key entries.")
+  }
+  return values.single()
+}
+
+fun requireBuildishWrapperJarSha256(propertiesFile: File): String {
+  val value = requireSinglePropertyValue(propertiesFile, buildishWrapperJarSha256Property)
+  if (!value.matches(Regex("[0-9a-f]{64}"))) {
+    throw GradleException(
+      "$buildishWrapperJarSha256Property must be exactly one lowercase 64-character SHA-256 value in '${propertiesFile.absolutePath}'.",
+    )
+  }
+  return value
+}
+
+// Gradle's Wrapper task rewrites gradle-wrapper.properties and drops unknown
+// project-owned keys. Reinsert the already-reviewed digest without deriving or
+// downloading a replacement, preserving the file's newline convention.
+fun contentWithSingleProperty(content: String, key: String, value: String): String {
+  val newline = newlineFor(content)
+  val hasTrailingNewline = content.endsWith("\n") || content.endsWith("\r")
+  val lines = content.split(Regex("\\r?\\n")).toMutableList()
+  if (hasTrailingNewline && lines.lastOrNull().isNullOrEmpty()) lines.removeLast()
+  val retainedLines = lines.filterNot { line -> line.startsWith("$key=") }
+  return (retainedLines + "$key=$value").joinToString(newline) + if (hasTrailingNewline) newline else ""
+}
+
 // Insert one block immediately after any supported anchor line unless it is
 // already present. The operation is intentionally idempotent because the helper
 // may run the wrapper task multiple times in the same project.
-fun patchAfterAnyAnchor(target: File, anchors: List<String>, insertion: String, label: String) {
-  val content = target.readText()
+fun contentAfterAnyAnchor(
+  content: String,
+  target: File,
+  anchors: List<String>,
+  insertion: String,
+  label: String,
+): String {
   val newline = newlineFor(content)
   val normalizedInsertion = normalizeForFile(insertion, newline)
-  if (content.contains(normalizedInsertion)) return
+  if (content.contains(normalizedInsertion)) return content
   for (anchor in anchors) {
     val anchorWithNewline = "$anchor$newline"
     val updated =
@@ -113,21 +160,24 @@ fun patchAfterAnyAnchor(target: File, anchors: List<String>, insertion: String, 
         content.endsWith(anchor) -> content.dropLast(anchor.length) + "$anchor$newline$normalizedInsertion"
         else -> continue
       }
-    target.writeText(updated)
-    return
-    }
+    return updated
+  }
   throw GradleException("Unable to find the expected insertion point in $label at '${target.absolutePath}'.")
 }
 
 // Replace the exact generated Java invocation line with the helper-aware version.
 // Multiple historical launcher shapes are supported so the tool can span several
 // Gradle minor lines without guessing which batch format was generated.
-fun replaceAnyExactLine(target: File, replacements: List<Pair<String, String>>, label: String) {
-  val content = target.readText()
+fun contentAfterAnyExactLineReplacement(
+  content: String,
+  target: File,
+  replacements: List<Pair<String, String>>,
+  label: String,
+): String {
   val newline = newlineFor(content)
   for ((_, replacement) in replacements) {
     val normalizedReplacement = normalizeForFile(replacement, newline)
-    if (content.contains(normalizedReplacement)) return
+    if (content.contains(normalizedReplacement)) return content
   }
   for ((currentLine, replacement) in replacements) {
     val normalizedReplacement = normalizeForFile(replacement, newline)
@@ -139,10 +189,69 @@ fun replaceAnyExactLine(target: File, replacements: List<Pair<String, String>>, 
         content.endsWith(currentLine) -> content.dropLast(currentLine.length) + normalizedReplacement
         else -> continue
       }
-    target.writeText(updated)
-    return
+    return updated
   }
   throw GradleException("Unable to find the expected replacement point in $label at '${target.absolutePath}'.")
+}
+
+fun requireOrdinaryFile(target: File, label: String) {
+  val path = target.toPath()
+  if (Files.isSymbolicLink(path) || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+    throw GradleException("$label must be an ordinary file at '${target.absolutePath}'.")
+  }
+}
+
+fun moveReplacing(source: Path, target: Path) {
+  try {
+    Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+  } catch (_: AtomicMoveNotSupportedException) {
+    Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+  }
+}
+
+fun restoreFileBackups(
+  backupPaths: List<Path>,
+  updates: List<Pair<File, String>>,
+  publicationFailure: Exception,
+) {
+  for (index in updates.indices) {
+    val rollbackResult = runCatching { moveReplacing(backupPaths[index], updates[index].first.toPath()) }
+    rollbackResult.exceptionOrNull()?.also(publicationFailure::addSuppressed)
+  }
+}
+
+// Publish the properties file and both launchers as one rollback-capable
+// operation. Each replacement is staged beside its destination, and all
+// originals are copied before the first move so a late failure cannot split the
+// wrapper configuration from its launcher patches.
+fun publishFileUpdates(updates: List<Pair<File, String>>) {
+  val stagedPaths = mutableListOf<Path>()
+  val backupPaths = mutableListOf<Path>()
+
+  try {
+    for ((target, updatedContent) in updates) {
+      val targetPath = target.toPath()
+      val parent = targetPath.parent
+      val stagedPath = Files.createTempFile(parent, ".buildish-no-gradle-wrapper-jar-stage.", ".tmp")
+      Files.copy(targetPath, stagedPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES)
+      Files.write(stagedPath, updatedContent.toByteArray(StandardCharsets.UTF_8), StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+      stagedPaths.add(stagedPath)
+
+      val backupPath = Files.createTempFile(parent, ".buildish-no-gradle-wrapper-jar-backup.", ".tmp")
+      Files.copy(targetPath, backupPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES)
+      backupPaths.add(backupPath)
+    }
+
+    try {
+      updates.indices.forEach { index -> moveReplacing(stagedPaths[index], updates[index].first.toPath()) }
+    } catch (publicationFailure: Exception) {
+      restoreFileBackups(backupPaths, updates, publicationFailure)
+      throw GradleException("Unable to publish patched Gradle wrapper files; original files were restored where possible.", publicationFailure)
+    }
+  } finally {
+    stagedPaths.forEach { path -> runCatching { Files.deleteIfExists(path) } }
+    backupPaths.forEach { path -> runCatching { Files.deleteIfExists(path) } }
+  }
 }
 
 // Gradle's generated `gradle-wrapper.properties` often omits distributionSha256Sum
@@ -169,6 +278,81 @@ fun warnIfDistributionSha256SumMissing(wrapperTask: Wrapper) {
   )
 }
 
+fun patchGeneratedWrapperFiles(wrapperTask: Wrapper, preservedWrapperJarSha256: String): String {
+  val scriptFile = wrapperTask.scriptFile
+  val batchScript = wrapperTask.batchScript
+  val propertiesFile = wrapperTask.jarFile.parentFile.resolve("gradle-wrapper.properties")
+  requireOrdinaryFile(propertiesFile, "gradle-wrapper.properties")
+  requireOrdinaryFile(scriptFile, "gradlew")
+  requireOrdinaryFile(batchScript, "gradlew.bat")
+
+  val propertiesContent = propertiesFile.readText()
+  val unixContent = scriptFile.readText()
+  val batchContent = batchScript.readText()
+  val generatedDistributionUrl = requireSinglePropertyValue(propertiesFile, "distributionUrl")
+  val updatedPropertiesContent =
+    contentWithSingleProperty(
+      propertiesContent,
+      buildishWrapperJarSha256Property,
+      preservedWrapperJarSha256,
+    )
+  val updatedUnixContent =
+    contentAfterAnyAnchor(unixContent, scriptFile, unixAnchors, unixInsertion, "gradlew")
+  val batchContentWithHelper =
+    contentAfterAnyAnchor(batchContent, batchScript, listOf(batchAnchor), batchHelperBlock, "gradlew.bat")
+  val updatedBatchContent =
+    contentAfterAnyExactLineReplacement(
+      batchContentWithHelper,
+      batchScript,
+      batchExecuteLineReplacements,
+      "gradlew.bat",
+    )
+
+  publishFileUpdates(
+    listOf(
+      propertiesFile to updatedPropertiesContent,
+      scriptFile to updatedUnixContent,
+      batchScript to updatedBatchContent,
+    ),
+  )
+  return generatedDistributionUrl
+}
+
+data class WrapperConfigurationBeforeExecution(
+  val wrapperJarSha256: String,
+  val distributionUrl: String,
+)
+
+fun readWrapperConfigurationBeforeExecution(wrapperTask: Wrapper): WrapperConfigurationBeforeExecution {
+  val propertiesFile = wrapperTask.jarFile.parentFile.resolve("gradle-wrapper.properties")
+  requireOrdinaryFile(propertiesFile, "gradle-wrapper.properties")
+  return WrapperConfigurationBeforeExecution(
+    wrapperJarSha256 = requireBuildishWrapperJarSha256(propertiesFile),
+    distributionUrl = requireSinglePropertyValue(propertiesFile, "distributionUrl"),
+  )
+}
+
+fun completeWrapperTask(wrapperTask: Wrapper, previousConfiguration: WrapperConfigurationBeforeExecution?) {
+  val requiredPreviousConfiguration =
+    previousConfiguration
+      ?: throw GradleException("Unable to preserve the reviewed Gradle wrapper configuration before the Wrapper task.")
+  val generatedDistributionUrl =
+    patchGeneratedWrapperFiles(wrapperTask, requiredPreviousConfiguration.wrapperJarSha256)
+  warnIfDistributionSha256SumMissing(wrapperTask)
+  if (generatedDistributionUrl != requiredPreviousConfiguration.distributionUrl) {
+    wrapperTask.logger.warn(
+      """
+      ==============================================================================
+      Buildish helper warning: distributionUrl changed, but
+      $buildishWrapperJarSha256Property was only preserved; it was not recalculated.
+      Replace it with the reviewed Gradle wrapper JAR SHA-256 for the new version
+      before the next gradlew / gradlew.bat invocation.
+      ==============================================================================
+      """.trimIndent(),
+    )
+  }
+}
+
 // Init scripts are evaluated with a `Gradle` receiver rather than a project
 // receiver, so the `Wrapper` hook is registered once the projects are loaded.
 //
@@ -179,13 +363,10 @@ gradle.projectsLoaded {
   rootProject {
     tasks.withType<Wrapper>().configureEach {
       val wrapperTask = this
+      var configurationBeforeExecution: WrapperConfigurationBeforeExecution? = null
       notCompatibleWithConfigurationCache("Patches generated launcher scripts after the Wrapper task writes them.")
-      doLast {
-        warnIfDistributionSha256SumMissing(wrapperTask)
-        patchAfterAnyAnchor(scriptFile, unixAnchors, unixInsertion, "gradlew")
-        patchAfterAnyAnchor(batchScript, listOf(batchAnchor), batchHelperBlock, "gradlew.bat")
-        replaceAnyExactLine(batchScript, batchExecuteLineReplacements, "gradlew.bat")
-      }
+      doFirst { configurationBeforeExecution = readWrapperConfigurationBeforeExecution(wrapperTask) }
+      doLast { completeWrapperTask(wrapperTask, configurationBeforeExecution) }
     }
   }
 }
