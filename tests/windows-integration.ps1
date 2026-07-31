@@ -65,6 +65,35 @@ function Invoke-BuildishWithGradleUserHome {
   }
 }
 
+function Invoke-BuildishWrapperTaskFromStableBatchCopy {
+  param(
+    [string]$ProjectDirectory,
+    [string]$GradleVersion,
+    [string]$Label
+  )
+
+  # A Wrapper task can replace gradlew.bat with a different Gradle generation's
+  # control-flow shape while cmd.exe is still returning through the old file.
+  # Run that self-regenerating pass through a same-directory copy so APP_HOME is
+  # unchanged and the active batch file remains stable until Java exits.
+  $sourceLauncherPath = Join-Path -Path $ProjectDirectory -ChildPath 'gradlew.bat'
+  $stableLauncherName = ".gradlew-buildish-update-$([System.Guid]::NewGuid().ToString('N')).bat"
+  $stableLauncherPath = Join-Path -Path $ProjectDirectory -ChildPath $stableLauncherName
+  Copy-Item -LiteralPath $sourceLauncherPath -Destination $stableLauncherPath
+  try {
+    Invoke-BuildishWithGradleUserHome -ProjectDirectory $ProjectDirectory -Label $Label -Command {
+      Push-Location $ProjectDirectory
+      try {
+        & cmd.exe /d /c "$stableLauncherName --no-daemon wrapper --gradle-version $GradleVersion --distribution-type bin"
+      } finally {
+        Pop-Location
+      }
+    }
+  } finally {
+    Remove-Item -LiteralPath $stableLauncherPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Get-BuildishWrapperVersion {
   param([string]$ProjectDirectory)
 
@@ -211,14 +240,23 @@ try {
   if ((Get-BuildishWrapperJarPin -ProjectDirectory $projectDirectory) -ne $previousWrapperJarPin) {
     throw 'Gradle init script did not preserve buildishWrapperJarSha256Sum during wrapper property regeneration.'
   }
-  Set-BuildishWrapperJarPin -ProjectDirectory $projectDirectory -Sha256 (Get-BuildishPublishedWrapperJarChecksum -GradleVersion $TwoSegmentGradleVersion)
+  $twoSegmentWrapperJarPin = Get-BuildishPublishedWrapperJarChecksum -GradleVersion $TwoSegmentGradleVersion
+  Set-BuildishWrapperJarPin -ProjectDirectory $projectDirectory -Sha256 $twoSegmentWrapperJarPin
   Remove-Item -LiteralPath $wrapperJarPath, (Join-Path -Path $wrapperDirectory -ChildPath "gradle-wrapper-$TwoSegmentGradleVersion.sha256"), (Join-Path -Path $wrapperDirectory -ChildPath "gradle-wrapper-$TwoSegmentGradleVersion.asc") -Force -ErrorAction SilentlyContinue
-  # This fresh download runs the helper through gradlew.bat's Windows PowerShell
-  # 5.1 process. GPG creates a new temporary keybox and writes that successful
-  # initialization diagnostic to stderr, which must not abort signature checks.
-  Invoke-BuildishWithGradleUserHome -ProjectDirectory $projectDirectory -Label 'cmd gradlew.bat second wrapper upgrade pass' -Command {
-    Push-Location $projectDirectory
-    try { & cmd.exe /d /c "gradlew.bat --no-daemon wrapper --gradle-version $TwoSegmentGradleVersion --distribution-type bin" } finally { Pop-Location }
+  # This fresh download runs the copied launcher through Windows PowerShell 5.1.
+  # GPG creates a new temporary keybox and writes that successful initialization
+  # diagnostic to stderr, which must not abort signature checks.
+  $stableWrapperTaskParameters = @{
+    ProjectDirectory = $projectDirectory
+    GradleVersion = $TwoSegmentGradleVersion
+    Label = 'copied gradlew.bat second wrapper change pass'
+  }
+  Invoke-BuildishWrapperTaskFromStableBatchCopy @stableWrapperTaskParameters
+  if ((Get-BuildishWrapperVersion -ProjectDirectory $projectDirectory) -ne $TwoSegmentGradleVersion) {
+    throw 'The copied-launcher Wrapper task did not retain the requested Gradle version.'
+  }
+  if ((Get-BuildishWrapperJarPin -ProjectDirectory $projectDirectory) -ne $twoSegmentWrapperJarPin) {
+    throw 'The copied-launcher Wrapper task did not retain the reviewed wrapper-JAR pin.'
   }
   Assert-BuildishMetadataForVersion -ProjectDirectory $projectDirectory -GradleVersion $TwoSegmentGradleVersion
 

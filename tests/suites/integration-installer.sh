@@ -72,6 +72,12 @@ exercise_standalone_installation_documentation_contract() {
     fail 'reviewed-install docs do not explain cold and offline behavior.'
   grep -Fq '`gradlew.bat` invokes `powershell.exe` by name' "$docs_path" ||
     fail 'reviewed-install docs do not distinguish the gradlew.bat Windows PowerShell requirement from pwsh.'
+  grep -Fq '$stableLauncher = Join-Path $PWD' "$docs_path" ||
+    fail 'reviewed-install docs do not show the stable-copy Windows Wrapper regeneration contract.'
+  grep -Fq '& $stableLauncher wrapper --gradle-version $newVersion' "$docs_path" ||
+    fail 'reviewed-install docs do not use an executable version variable in the copied Windows launcher command.'
+  grep -Fq 'if ($LASTEXITCODE -ne 0)' "$docs_path" ||
+    fail 'reviewed-install docs do not preserve native-command failure handling in the Windows Wrapper regeneration example.'
 }
 
 # Exercise the shared output normalizer itself so future assertion cleanups do

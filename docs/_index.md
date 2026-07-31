@@ -255,6 +255,13 @@ Run the normal Wrapper task with the desired version. The init script preserves 
 ./gradlew wrapper --gradle-version <new-version> --distribution-type bin
 ```
 
+On native Windows, use the equivalent first-pass command:
+
+```powershell
+$newVersion = '8.14' # Replace with the reviewed target version.
+.\gradlew.bat wrapper --gradle-version $newVersion --distribution-type bin
+```
+
 Then obtain the new version's Wrapper JAR checksum from Gradle's checksum documentation and replace
 `buildishWrapperJarSha256Sum` in the same reviewed change as `distributionUrl`. The helper
 intentionally fails the next launch if the old and new values do not agree. Do not hash the JAR
@@ -268,7 +275,27 @@ version regenerates all wrapper files:
 ./gradlew wrapper --gradle-version <new-version> --distribution-type bin
 ```
 
-Review the resulting properties and launcher changes before running `./gradlew --version` again.
+On native Windows, run this self-regenerating second pass through a temporary same-directory copy.
+The selected Gradle version may replace `gradlew.bat` with a different batch control-flow shape
+while `cmd.exe` is still returning through the original launcher. The copy keeps the active script
+stable without changing `APP_HOME`:
+
+```powershell
+$newVersion = '8.14' # Replace with the reviewed target version.
+$stableLauncher = Join-Path $PWD ('.gradlew-buildish-update-{0}.bat' -f [System.Guid]::NewGuid().ToString('N'))
+Copy-Item -LiteralPath .\gradlew.bat -Destination $stableLauncher
+try {
+  & $stableLauncher wrapper --gradle-version $newVersion --distribution-type bin
+  if ($LASTEXITCODE -ne 0) {
+    throw "Gradle Wrapper task failed with exit code $LASTEXITCODE."
+  }
+} finally {
+  Remove-Item -LiteralPath $stableLauncher -Force -ErrorAction SilentlyContinue
+}
+```
+
+Review the resulting properties and launcher changes before running `./gradlew --version` again, or
+`.\gradlew.bat --version` on native Windows.
 
 ## Troubleshooting
 
