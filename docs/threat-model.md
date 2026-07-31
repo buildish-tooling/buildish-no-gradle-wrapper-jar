@@ -28,7 +28,7 @@ version N is triaged against the model shipped with N, not against later `main` 
 
 Implementation review baseline: `2748f332c2b1de75f8a42b18ee71fcb69e63ab2a`. *(maintainer)*
 
-Security-sensitive content digest: `4715bb92c2885f12c2b7c9d5a0f2c19e390b57db`. The digest covers the paths declared in
+Security-sensitive content digest: `15523bc951d5f89a01e412d57bc49baa9df2d516`. The digest covers the paths declared in
 `scripts/security-model-inputs.txt` and is enforced by `make security-model-check`. *(documented)*
 
 Last maintainer review: 2026-07-31. *(maintainer)*
@@ -211,7 +211,7 @@ No-surprise side effects:
 
 | Knob / variant | Default | Effect on model | Maintainer stance |
 | --- | --- | --- | --- |
-| `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS` | `60` seconds | Changes POSIX and Windows helper network timeouts. Invalid or non-positive values fail. Larger values extend time before availability failure. | Supported runtime configuration. *(documented)* |
+| `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS` | `60` seconds | Changes POSIX and Windows helper network timeouts. Invalid or non-positive values fail through the normal helper diagnostic path before project mutation. Larger values extend time before availability failure. | Supported runtime configuration. *(documented)* |
 | `BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS` | `60` seconds | Changes release-bootstrap download timeouts. Invalid or non-positive values fail. Larger values extend time before availability failure. | Supported bootstrap configuration. *(documented)* |
 | `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` | Buildish `main` branch raw URL | Changes the remote source for unsafe development installers. This can redirect blind-trust execution. | Development-only unsafe escape hatch; not for CI, automation, or secrets. *(documented)* |
 | Checked-in `bootstrap-install.*` placeholders | Placeholder URL/manifest-digest/key material with hard fail | Repository templates intentionally fail closed until release rendering substitutes immutable URLs, the exact manifest digest, and signing trust material. | Template copies are not intended for direct execution. *(documented)* |

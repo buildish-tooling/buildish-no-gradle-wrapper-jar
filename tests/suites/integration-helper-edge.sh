@@ -228,6 +228,82 @@ exercise_posix_helper_download_timeout_failure() {
   [ ! -e "$sha_path" ] || fail "POSIX helper should not publish a timed-out checksum download into '$sha_path'."
 }
 
+# Invalid timeout configuration must fail before any project mutation. Exercise
+# both a zero value and non-numeric input because the two parsers use different
+# platform-native integer validation mechanisms.
+exercise_helper_invalid_timeout_configuration_failure() {
+  project_dir=$1
+  helper_kind=$2
+  invalid_value=$3
+  snapshot_dir=$project_dir.before-invalid-timeout
+
+  log "exercising $helper_kind helper invalid timeout '$invalid_value' in '$project_dir'"
+  copy_project_fixture "$project_dir" "$snapshot_dir"
+
+  case $helper_kind in
+    posix)
+      run_posix_helper_direct_with_timeout "$project_dir" "$invalid_value"
+      assert_last_command_failed "POSIX helper unexpectedly accepted invalid timeout '$invalid_value'."
+      assert_last_output_contains 'buildish-no-gradle-wrapper-jar: BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS must be a positive integer.' 'POSIX helper invalid-timeout failure did not use the stable helper diagnostic.'
+      ;;
+    powershell)
+      run_powershell_helper_direct_capture_streams "$project_dir" '' "$invalid_value"
+      [ "$CAPTURED_STATUS" -ne 0 ] || fail "PowerShell helper unexpectedly accepted invalid timeout '$invalid_value'."
+      [ "$CAPTURED_STDOUT_BYTE_COUNT" -eq 0 ] ||
+        fail "PowerShell helper invalid-timeout failure wrote to the stdout protocol (bytes=$CAPTURED_STDOUT_BYTE_COUNT, stdout=$CAPTURED_STDOUT)."
+      assert_last_stderr_contains 'buildish-no-gradle-wrapper-jar: Buildish helper HTTP timeout must be a positive integer' 'PowerShell helper invalid-timeout failure did not use the stable stderr diagnostic.'
+      if printf '%s' "$CAPTURED_STDERR_NORMALIZED" | grep -Fq 'Line |'; then
+        fail 'PowerShell helper invalid-timeout failure leaked a raw PowerShell error record.'
+      fi
+      ;;
+    *)
+      fail "unknown helper kind '$helper_kind'"
+      ;;
+  esac
+  diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "$helper_kind helper changed the project after rejecting invalid timeout '$invalid_value'."
+}
+
+# Verification must fail closed when GPG is absent. Use a controlled PATH and
+# absolute interpreter paths so the test proves the helper's own dependency
+# check rather than the test harness's command lookup.
+exercise_helper_missing_gpg_failure() {
+  project_dir=$1
+  helper_kind=$2
+  restricted_path=$project_dir.missing-gpg-path
+  snapshot_dir=$project_dir.before-missing-gpg
+
+  log "exercising $helper_kind helper missing-GPG failure in '$project_dir'"
+  [ ! -e "$restricted_path" ] || fail "missing-GPG test PATH already exists at '$restricted_path'."
+  mkdir "$restricted_path"
+  copy_project_fixture "$project_dir" "$snapshot_dir"
+
+  case $helper_kind in
+    posix)
+      curl_command=$(command -v curl)
+      shell_command=$(command -v sh)
+      [ -n "$curl_command" ] && [ -n "$shell_command" ] || fail 'missing-GPG test requires curl and sh paths.'
+      ln -s "$curl_command" "$restricted_path/curl"
+      helper_path=$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh
+      run_and_capture env PATH="$restricted_path" APP_HOME="$project_dir" "$shell_command" -c 'helper_path=$1; set --; . "$helper_path"' sh "$helper_path"
+      assert_last_command_failed 'POSIX helper unexpectedly succeeded without GPG.'
+      assert_last_output_contains "Required command 'gpg' was not found on PATH." 'POSIX helper missing-GPG failure did not identify the unavailable command.'
+      ;;
+    powershell)
+      powershell_command=$(pwsh -NoLogo -NoProfile -Command '(Get-Process -Id $PID).Path')
+      [ -n "$powershell_command" ] || fail 'missing-GPG test could not resolve the PowerShell executable path.'
+      helper_path=$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1
+      run_and_capture env PATH="$restricted_path" APP_HOME="$project_dir" "$powershell_command" -NoLogo -NoProfile -File "$helper_path"
+      assert_last_command_failed 'PowerShell helper unexpectedly succeeded without GPG.'
+      assert_last_output_contains "A GnuPG command ('gpg.exe' preferred, otherwise 'gpg') is required" 'PowerShell helper missing-GPG failure did not identify the unavailable command.'
+      ;;
+    *)
+      fail "unknown helper kind '$helper_kind'"
+      ;;
+  esac
+
+  diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "$helper_kind helper changed the project while failing closed without GPG."
+}
+
 # Structurally valid but incorrect sidecars used to persist forever. Serve the
 # original pair, corrupt one cached file without breaking its shallow validator,
 # and require exactly one paired refresh followed by successful verification.
@@ -640,6 +716,14 @@ run_helper_edge_case_suite() {
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-download-timeout"
   exercise_posix_helper_download_timeout_failure "$scenario_root/posix-download-timeout" "$posix_version"
 
+  for invalid_timeout in 0 not-a-number; do
+    copy_project_fixture "$posix_base_project" "$scenario_root/posix-invalid-timeout-$invalid_timeout"
+    exercise_helper_invalid_timeout_configuration_failure "$scenario_root/posix-invalid-timeout-$invalid_timeout" posix "$invalid_timeout"
+  done
+
+  copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-gpg"
+  exercise_helper_missing_gpg_failure "$scenario_root/posix-missing-gpg" posix
+
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-properties"
   exercise_helper_missing_properties_failure "$scenario_root/posix-missing-properties" posix
 
@@ -709,6 +793,14 @@ run_helper_edge_case_suite() {
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-download-timeout"
   exercise_powershell_helper_download_timeout_failure "$scenario_root/powershell-download-timeout" "$powershell_version"
+
+  for invalid_timeout in 0 not-a-number; do
+    copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-invalid-timeout-$invalid_timeout"
+    exercise_helper_invalid_timeout_configuration_failure "$scenario_root/powershell-invalid-timeout-$invalid_timeout" powershell "$invalid_timeout"
+  done
+
+  copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-gpg"
+  exercise_helper_missing_gpg_failure "$scenario_root/powershell-missing-gpg" powershell
 
   copy_project_fixture "$powershell_base_project" "$scenario_root/powershell-missing-properties"
   exercise_powershell_helper_failure_stream_protocol "$scenario_root/powershell-missing-properties"

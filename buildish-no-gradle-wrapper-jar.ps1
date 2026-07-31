@@ -78,9 +78,6 @@ function Get-BuildishNoGradleWrapperJarPositiveIntegerFromEnvironment {
   return $parsedValue
 }
 
-# Bound every network download so helper bootstrap cannot hang forever behind a
-# broken proxy, blackholed endpoint, or maliciously stalling server.
-$BuildishHttpTimeoutSeconds = Get-BuildishNoGradleWrapperJarPositiveIntegerFromEnvironment -EnvironmentVariableName 'BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS' -DefaultValue 60 -Label 'Buildish helper HTTP timeout'
 $TrustedGradlePublicKey = @'
 -----BEGIN PGP PUBLIC KEY BLOCK-----
 
@@ -736,6 +733,12 @@ function Test-BuildishNoGradleWrapperJarDetachedSignature {
 }
 
 try {
+  # Bound every network download so helper bootstrap cannot hang forever behind
+  # a broken proxy, blackholed endpoint, or maliciously stalling server. Keep
+  # validation inside the entry-point error boundary so invalid configuration
+  # uses the helper's stable stderr-only diagnostic protocol.
+  $BuildishHttpTimeoutSeconds = Get-BuildishNoGradleWrapperJarPositiveIntegerFromEnvironment -EnvironmentVariableName 'BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS' -DefaultValue 60 -Label 'Buildish helper HTTP timeout'
+
   # The patched batch launcher resolves APP_HOME before invoking this helper.
   if ([string]::IsNullOrWhiteSpace($env:APP_HOME)) {
     throw 'APP_HOME must already be set by gradlew.bat before invoking this helper.'

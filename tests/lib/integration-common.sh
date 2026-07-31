@@ -637,7 +637,7 @@ run_posix_helper_direct_with_timeout() {
   project_dir=$1
   timeout_seconds=$2
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh"
-  log "running POSIX helper directly in '$project_dir' with timeout ${timeout_seconds}s"
+  log "running POSIX helper directly in '$project_dir' with timeout value '$timeout_seconds'"
   run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS="$timeout_seconds" sh -c 'helper_path=$1; set --; . "$helper_path"' sh "$helper_path"
 }
 
@@ -667,13 +667,18 @@ run_powershell_helper_direct() {
 run_powershell_helper_direct_capture_streams() {
   project_dir=$1
   original_args=${2:-}
+  timeout_seconds=${3-}
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1"
   stdout_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-stdout.XXXXXX")
   stderr_file=$(mktemp "${TMPDIR:-/tmp}/buildish-no-gradle-wrapper-jar-stderr.XXXXXX")
   log "running PowerShell helper directly with separate streams in '$project_dir'"
 
   set +e
-  env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" pwsh -NoLogo -NoProfile -File "$helper_path" >"$stdout_file" 2>"$stderr_file"
+  if [ "$#" -ge 3 ]; then
+    env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS="$timeout_seconds" pwsh -NoLogo -NoProfile -File "$helper_path" >"$stdout_file" 2>"$stderr_file"
+  else
+    env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" pwsh -NoLogo -NoProfile -File "$helper_path" >"$stdout_file" 2>"$stderr_file"
+  fi
   CAPTURED_STATUS=$?
   set -e
 
@@ -701,7 +706,7 @@ run_powershell_helper_direct_with_timeout() {
   timeout_seconds=$2
   original_args=${3:-}
   helper_path="$project_dir/gradle/buildish-no-gradle-wrapper-jar.ps1"
-  log "running PowerShell helper directly in '$project_dir' with timeout ${timeout_seconds}s"
+  log "running PowerShell helper directly in '$project_dir' with timeout value '$timeout_seconds'"
   run_and_capture env APP_HOME="$project_dir" BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS="$original_args" BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS="$timeout_seconds" pwsh -NoLogo -NoProfile -File "$helper_path"
 }
 
