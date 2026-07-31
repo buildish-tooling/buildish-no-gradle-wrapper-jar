@@ -36,7 +36,12 @@ Keep `tests/integration.sh` small. It should mostly:
 
 Shared shell code that is reused by more than one scenario group.
 
-- `integration-common.sh` contains general helpers such as logging, output capture, assertions, process runners, and shared environment/tool lookup helpers.
+- `integration-common.sh` contains logging, output capture, assertions, and
+  shared environment/tool lookup helpers.
+- `integration-project.sh` contains project paths, property/file mutations,
+  launcher assertions, and wrapper metadata assertions.
+- `integration-runners.sh` contains Gradle, installer, bootstrap, and direct
+  helper process runners.
 - `integration-fixtures.sh` contains fixture builders and mutable test-environment helpers such as Gradle project setup, local HTTP servers, and bootstrap-signing helpers.
 
 If logic is generic and used by several suites, it belongs in `lib/`.
@@ -50,7 +55,14 @@ Topic-oriented scenario groups.
   against canonical byte-for-byte input/output fixtures for both installers and
   the Gradle init script.
 - `integration-installer.sh` covers installer and unsafe-dev flows.
-- `integration-helper-edge.sh` covers recovery, validation, timeout, and other edge cases.
+- `integration-helper-integrity.sh` covers artifact recovery, metadata, size,
+  link, and replay behavior.
+- `integration-helper-configuration.sh` covers properties, pins, timeouts, and
+  external-tool failures.
+- `integration-helper-protocol.sh` covers launcher arguments and PowerShell's
+  stdout/stderr transport contract.
+- `integration-helper-edge.sh` is the compatibility coordinator for those three
+  helper topic suites.
 - `integration-init-script.sh` covers init-script-specific behavior.
 - `integration-bootstrap.sh` covers bootstrap installer scenarios.
 
@@ -86,7 +98,8 @@ Use the smallest useful command while iterating locally, then run the broader pr
 
 ## Maintenance notes
 
-This layout still relies on shared shell globals and source order.
+This layout still relies on shared shell globals and source order. The library
+order is common, project, runners, then fixtures; suite modules follow.
 
 When editing the shell suite:
 

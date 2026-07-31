@@ -48,6 +48,10 @@ BOOTSTRAP_TEST_PUBLIC_KEY_PATH=''
 
 # shellcheck source=tests/lib/integration-common.sh
 . "$TESTS_DIR/lib/integration-common.sh"
+# shellcheck source=tests/lib/integration-project.sh
+. "$TESTS_DIR/lib/integration-project.sh"
+# shellcheck source=tests/lib/integration-runners.sh
+. "$TESTS_DIR/lib/integration-runners.sh"
 # shellcheck source=tests/lib/integration-fixtures.sh
 . "$TESTS_DIR/lib/integration-fixtures.sh"
 # shellcheck source=tests/suites/integration-environment.sh
@@ -56,6 +60,12 @@ BOOTSTRAP_TEST_PUBLIC_KEY_PATH=''
 . "$TESTS_DIR/suites/integration-launcher-contract.sh"
 # shellcheck source=tests/suites/integration-installer.sh
 . "$TESTS_DIR/suites/integration-installer.sh"
+# shellcheck source=tests/suites/integration-helper-integrity.sh
+. "$TESTS_DIR/suites/integration-helper-integrity.sh"
+# shellcheck source=tests/suites/integration-helper-configuration.sh
+. "$TESTS_DIR/suites/integration-helper-configuration.sh"
+# shellcheck source=tests/suites/integration-helper-protocol.sh
+. "$TESTS_DIR/suites/integration-helper-protocol.sh"
 # shellcheck source=tests/suites/integration-helper-edge.sh
 . "$TESTS_DIR/suites/integration-helper-edge.sh"
 # shellcheck source=tests/suites/integration-init-script.sh
