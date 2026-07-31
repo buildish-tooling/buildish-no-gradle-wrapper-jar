@@ -304,6 +304,46 @@ exercise_helper_missing_gpg_failure() {
   diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "$helper_kind helper changed the project while failing closed without GPG."
 }
 
+# POSIX external-tool prerequisites must be checked before any cached artifact
+# is inspected or removed. A controlled PATH proves both the first downloader
+# guard and the checksum-tool alternative guard without relying on host layout.
+exercise_posix_helper_missing_tool_failure() {
+  project_dir=$1
+  missing_tool_kind=$2
+  restricted_path=$project_dir.missing-$missing_tool_kind-path
+  snapshot_dir=$project_dir.before-missing-$missing_tool_kind
+  shell_command=$(command -v sh)
+
+  log "exercising POSIX helper missing-$missing_tool_kind failure in '$project_dir'"
+  [ -n "$shell_command" ] || fail "missing-$missing_tool_kind test requires an absolute sh path."
+  [ ! -e "$restricted_path" ] || fail "missing-$missing_tool_kind test PATH already exists at '$restricted_path'."
+  mkdir "$restricted_path"
+  copy_project_fixture "$project_dir" "$snapshot_dir"
+
+  case $missing_tool_kind in
+    curl)
+      expected_diagnostic="Required command 'curl' was not found on PATH."
+      ;;
+    checksum)
+      for retained_command in curl gpg mktemp; do
+        retained_command_path=$(command -v "$retained_command")
+        [ -n "$retained_command_path" ] || fail "missing-checksum test requires '$retained_command'."
+        ln -s "$retained_command_path" "$restricted_path/$retained_command"
+      done
+      expected_diagnostic="Neither 'sha256sum' nor 'shasum' is available for checksum verification."
+      ;;
+    *)
+      fail "unknown missing POSIX helper tool kind '$missing_tool_kind'"
+      ;;
+  esac
+
+  helper_path=$project_dir/gradle/buildish-no-gradle-wrapper-jar.sh
+  run_and_capture env PATH="$restricted_path" APP_HOME="$project_dir" "$shell_command" -c 'helper_path=$1; set --; . "$helper_path"' sh "$helper_path"
+  assert_last_command_failed "POSIX helper unexpectedly succeeded without $missing_tool_kind tooling."
+  assert_last_output_contains "$expected_diagnostic" "POSIX helper missing-$missing_tool_kind failure did not identify the unavailable prerequisite."
+  diff -r "$snapshot_dir" "$project_dir" >/dev/null || fail "POSIX helper changed the project while failing closed without $missing_tool_kind tooling."
+}
+
 # Structurally valid but incorrect sidecars used to persist forever. Serve the
 # original pair, corrupt one cached file without breaking its shallow validator,
 # and require exactly one paired refresh followed by successful verification.
@@ -723,6 +763,11 @@ run_helper_edge_case_suite() {
 
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-gpg"
   exercise_helper_missing_gpg_failure "$scenario_root/posix-missing-gpg" posix
+
+  for missing_tool_kind in curl checksum; do
+    copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-$missing_tool_kind"
+    exercise_posix_helper_missing_tool_failure "$scenario_root/posix-missing-$missing_tool_kind" "$missing_tool_kind"
+  done
 
   copy_project_fixture "$posix_base_project" "$scenario_root/posix-missing-properties"
   exercise_helper_missing_properties_failure "$scenario_root/posix-missing-properties" posix

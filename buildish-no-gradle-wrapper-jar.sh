@@ -54,6 +54,14 @@ buildish_no_gradle_wrapper_jar_require_command() {
     buildish_no_gradle_wrapper_jar_fail "Required command '$1' was not found on PATH."
 }
 
+# Check the portable SHA-256 alternatives together so a missing checksum tool
+# fails before the helper inspects or replaces any project-owned cache file.
+buildish_no_gradle_wrapper_jar_require_sha256_command() {
+  command -v sha256sum >/dev/null 2>&1 && return 0
+  command -v shasum >/dev/null 2>&1 && return 0
+  buildish_no_gradle_wrapper_jar_fail "Neither 'sha256sum' nor 'shasum' is available for checksum verification."
+}
+
 # Reject symlink indirection for runtime-managed project files. The installer
 # already refuses to patch through symlinks; the runtime helper should enforce
 # the same confinement before it reads or replaces cached metadata and JARs.
@@ -416,6 +424,7 @@ EOF
 buildish_no_gradle_wrapper_jar_require_command curl
 buildish_no_gradle_wrapper_jar_require_command gpg
 buildish_no_gradle_wrapper_jar_require_command mktemp
+buildish_no_gradle_wrapper_jar_require_sha256_command
 
 [ -n "${APP_HOME:-}" ] || buildish_no_gradle_wrapper_jar_fail "APP_HOME must already be set by gradlew before including this helper."
 

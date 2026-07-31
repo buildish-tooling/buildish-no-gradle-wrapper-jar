@@ -28,7 +28,7 @@ version N is triaged against the model shipped with N, not against later `main` 
 
 Implementation review baseline: `2748f332c2b1de75f8a42b18ee71fcb69e63ab2a`. *(maintainer)*
 
-Security-sensitive content digest: `15523bc951d5f89a01e412d57bc49baa9df2d516`. The digest covers the paths declared in
+Security-sensitive content digest: `6fdd44750f81c8c0226e2b546b15c67fe2529b3c`. The digest covers the paths declared in
 `scripts/security-model-inputs.txt` and is enforced by `make security-model-check`. *(documented)*
 
 Last maintainer review: 2026-07-31. *(maintainer)*
@@ -165,7 +165,9 @@ Reachability preconditions:
 Operating system and runtime assumptions:
 
 - POSIX helper and installer assume a POSIX shell plus required commands. *(documented)*
-- POSIX runtime helper requires `curl`, `gpg`, `mktemp`, and either `sha256sum` or `shasum`. *(documented)*
+- POSIX runtime helper requires `curl`, `gpg`, `mktemp`, and either `sha256sum`
+  or `shasum`; it preflights those capabilities before project mutation.
+  *(documented)*
 - POSIX bootstrap requires `curl` or `wget`, `gpg`, and either `sha256sum` or `shasum`. *(documented)*
 - PowerShell helper requires PowerShell, `Invoke-WebRequest` / .NET HTTP support, `Get-FileHash`, and native Windows GnuPG for Windows batch verification. *(documented)*
 - The PowerShell helper resolves the conventional `gpg` application directly
