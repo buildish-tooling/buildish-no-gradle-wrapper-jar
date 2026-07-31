@@ -17,13 +17,13 @@
 
 HELP_TARGETS := $(MAKEFILE_LIST)
 
-.PHONY: check clean help rat-check release-check syntax-check test
+.PHONY: check clean help rat-check release-check security-model-check syntax-check test
 
 help: ## Show available Make targets.
 	@awk 'BEGIN {FS = ":.*## "; printf "Available targets:\n"} /^[a-zA-Z0-9_.-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(HELP_TARGETS)
 
 syntax-check: ## Verify shell syntax and PowerShell parseability for the helper tool files.
-	sh -n buildish-no-gradle-wrapper-jar.sh install.sh unsafe-dev-install.sh bootstrap-install.sh scripts/rat-check.sh
+	sh -n buildish-no-gradle-wrapper-jar.sh install.sh unsafe-dev-install.sh bootstrap-install.sh scripts/check-security-model-freshness.sh scripts/rat-check.sh
 	bash -n tests/integration.sh
 	pwsh -NoLogo -NoProfile -Command '$$files=@("buildish-no-gradle-wrapper-jar.ps1","install.ps1","unsafe-dev-install.ps1","bootstrap-install.ps1","tests/windows-git-gpg-rejection.ps1","tests/windows-integration.ps1"); foreach($$file in $$files){ $$tokens=$$null; $$errors=$$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $$file), [ref]$$tokens, [ref]$$errors); if($$errors.Count -gt 0){ $$errors | ForEach-Object { $$_.ToString() }; exit 1 } }'
 
@@ -33,9 +33,12 @@ test: syntax-check ## Run integration tests for the helper tool.
 rat-check: ## Run Apache RAT against tracked files in this tool directory (requires Java 21+).
 	sh scripts/rat-check.sh
 
-release-check: test rat-check ## Run the release-oriented verification tasks for this tool.
+security-model-check: ## Verify that the threat model covers current security-sensitive content.
+	sh scripts/check-security-model-freshness.sh
 
-check: syntax-check test rat-check ## Run the full local verification suite for this tool.
+release-check: test rat-check security-model-check ## Run the release-oriented verification tasks for this tool.
+
+check: syntax-check test rat-check security-model-check ## Run the full local verification suite for this tool.
 
 clean: ## Remove generated build outputs for this tool.
 	rm -rf build

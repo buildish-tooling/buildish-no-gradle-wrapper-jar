@@ -21,16 +21,19 @@ description: Security properties, trust boundaries, and the current assessment f
 
 # Security and trust model
 
-Date: 2026-04-07
+Summary updated: 2026-07-31
 
-This page is the user-facing summary of the current security and trust model for the
-`no-gradle-wrapper-jar` blueprint.
+This page is a user-facing summary of the security and trust model for the
+`no-gradle-wrapper-jar` blueprint. If this summary disagrees with the canonical model, the canonical
+model controls:
+
+- [Canonical threat model (unreleased development documentation)](../development/threat-model/)
 
 For the planned hardened installer delivery model, see:
 
 - [Secure installer bootstrap approach](../secure-installer-approach/)
 
-For the full repository-level assessment, findings, and threat-model answers, see:
+For a supporting point-in-time repository assessment, see:
 
 - [Full security assessment](https://github.com/buildish-tooling/buildish-no-gradle-wrapper-jar/blob/main/SECURITY-ASSESSMENT.md)
 
@@ -46,14 +49,18 @@ pass:
 
 1. `distributionUrl` must use the canonical `https://services.gradle.org/distributions/...` shape.
 2. The Gradle version is derived only from the validated distribution URL.
-3. The authoritative wrapper checksum and detached signature are downloaded from
+3. The project commits exactly one reviewed `buildishWrapperJarSha256Sum`.
+4. The Gradle-published wrapper checksum and detached signature are downloaded from
    `services.gradle.org`.
-4. The wrapper JAR bytes are downloaded from the matching Gradle source tag on GitHub.
-5. The JAR must match the expected SHA-256 checksum.
-6. The detached signature must verify against pinned Gradle signing-key fingerprints in an isolated
+5. The downloaded checksum must agree with the project-owned pin.
+6. The wrapper JAR bytes are downloaded from the matching Gradle source tag on GitHub.
+7. The JAR must match the project-owned SHA-256 pin.
+8. The detached signature must verify against pinned Gradle signing-key fingerprints in an isolated
    temporary GPG home.
-7. Downloaded metadata and JAR files are written via temporary paths and only moved into place on
+9. Downloaded metadata and JAR files are written via temporary paths and only moved into place on
    success.
+10. Valid-looking corrupt checksum/signature sidecars receive at most one paired refresh and full
+    re-verification; a cached JAR that disagrees with the project pin remains a hard failure.
 
 That means poisoned cache content or a corrupted download should fail closed instead of being
 accepted silently.
@@ -108,8 +115,8 @@ The repository's own CI bootstrap is in better shape than the installer bootstra
   entrypoints.
 - On Windows, use a native Windows GnuPG build for `gradlew.bat` verification. The helper
   intentionally rejects the Git-for-Windows bundled `gpg.exe`.
-- Expect helper timeout failures to be explicit; a hung PowerShell helper download should fail with
-  a timeout error instead of waiting forever.
+- Expect runtime-helper and release-bootstrap timeout failures to be explicit instead of waiting
+  forever. Bootstrap downloads also enforce byte limits while streaming.
 
 ## Current status
 

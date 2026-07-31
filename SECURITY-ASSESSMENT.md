@@ -16,10 +16,17 @@
 
 # Security assessment
 
-Date: 2026-04-07
+Assessment updated: 2026-07-31
 
-This document provides a repository-local copy of the current security assessment for the
-`no-gradle-wrapper-jar` component.
+This document is a supporting point-in-time assessment of the `no-gradle-wrapper-jar` component,
+reviewed through implementation commit `2748f332c2b1de75f8a42b18ee71fcb69e63ab2a`. The canonical,
+maintainer-ratified security boundaries and triage rules are in
+[`docs/threat-model.md`](docs/threat-model.md). If the two documents disagree, the threat model
+controls.
+
+This update did not revalidate the in-progress release workflows or release tooling. Do not infer
+release readiness from this assessment; that review remains open until the release-tooling work is
+complete.
 
 For the planned hardened installer delivery model, see the dedicated
 [secure installer bootstrap approach](site/pages/secure-installer-approach.md) document.

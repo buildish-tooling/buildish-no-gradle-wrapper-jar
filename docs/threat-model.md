@@ -21,23 +21,30 @@ description: Threat boundaries, security properties, and triage dispositions for
 
 # Threat Model: Buildish no-gradle-wrapper-jar
 
-Version binding: this threat model is versioned alongside this repository and should be tagged with
-project releases. A report against project version N is triaged against the model as it stood at N,
-not against later `main` branch content. *(inferred)*
+Authority and version binding: this is the canonical threat model for this component. It is versioned
+alongside the repository and must be included with project releases. A report against project
+version N is triaged against the model shipped with N, not against later `main` branch content.
+*(maintainer)*
 
-Project version / commit: `0237f9e070ad63ad4e9b82ba7012d1428ae748f9`. *(documented)*
+Implementation review baseline: `2748f332c2b1de75f8a42b18ee71fcb69e63ab2a`. *(maintainer)*
 
-Date: 2026-06-05. *(documented)*
+Security-sensitive content digest: `59b349a14a68d58f5bf2d9a07ec2754eac89848a`. The digest covers the paths declared in
+`scripts/security-model-inputs.txt` and is enforced by `make security-model-check`. *(documented)*
 
-Threat model author: generated draft for maintainer review. *(documented)*
+Last maintainer review: 2026-07-31. *(maintainer)*
 
-Status: draft, pending maintainer review as of 2026-06-05. *(documented)*
+Status: ratified. Changes to declared security-sensitive surfaces require this model to be reviewed
+and its content digest updated. *(maintainer)*
 
 Reporting cross-reference: suspected findings that violate the claimed properties in [§8](#8-security-properties-the-project-provides) should be reported per the [Buildish security policy](https://buildish.org/community/security/); findings that fall under [§3](#3-out-of-scope-explicit-non-goals) or [§9](#9-security-properties-the-project-does-not-provide) may be closed citing this document. *(documented)*
 
-Provenance legend: *(documented)* means stated in repository code, tests, or documentation; *(maintainer)* means explicitly confirmed by maintainers after review; *(inferred)* means derived from current implementation or project structure and requires confirmation before ratification.
+Provenance legend: *(documented)* means verified in repository code, tests, or documentation;
+*(maintainer)* means an explicit scope, policy, or design decision; *(inferred)* means contextual
+analysis derived from the implementation rather than a separately enforced security property. The
+model is ratified as a whole; provenance labels preserve the basis for each statement.
 
-Draft confidence: 104 documented / 0 maintainer / 36 inferred claims. *(documented)*
+Review coverage: the component scope, trust boundaries, claimed and disclaimed properties, triage
+dispositions, and former open questions were reviewed on the date above. *(maintainer)*
 
 Buildish no-gradle-wrapper-jar is a copyable helper blueprint for Gradle projects that want to keep
 using `gradlew` / `gradlew.bat` without committing `gradle/wrapper/gradle-wrapper.jar`. It installs
@@ -187,7 +194,9 @@ Network assumptions:
 
 No-surprise side effects:
 
-- Runtime helpers read environment variables needed by launchers and, on PowerShell, `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS`. *(documented)*
+- Runtime helpers read environment variables needed by launchers and
+  `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS`; bootstrap installers read
+  `BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS`. *(documented)*
 - Unsafe development installers read `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` and CI marker environment variables. *(documented)*
 - Helpers and installers write to stdout/stderr for command fragments, warnings, and errors. *(documented)*
 - Runtime helpers and bootstraps spawn `gpg`; shell variants spawn common utilities such as `curl`, `wget`, `sed`, `awk`, `grep`, `wc`, `tr`, `mktemp`, and checksum commands. *(documented)*
@@ -197,7 +206,8 @@ No-surprise side effects:
 
 | Knob / variant | Default | Effect on model | Maintainer stance |
 | --- | --- | --- | --- |
-| `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS` | `60` seconds in PowerShell helper | Changes Windows helper network timeout. Invalid or non-positive values fail. Larger values extend time before availability failure. | Supported runtime configuration; production default appears intended. *(documented)* |
+| `BUILDISH_NO_GRADLE_WRAPPER_JAR_HTTP_TIMEOUT_SECONDS` | `60` seconds | Changes POSIX and Windows helper network timeouts. Invalid or non-positive values fail. Larger values extend time before availability failure. | Supported runtime configuration. *(documented)* |
+| `BUILDISH_BOOTSTRAP_INSTALL_HTTP_TIMEOUT_SECONDS` | `60` seconds | Changes release-bootstrap download timeouts. Invalid or non-positive values fail. Larger values extend time before availability failure. | Supported bootstrap configuration. *(documented)* |
 | `BUILDISH_UNSAFE_DEV_INSTALL_BASE_URL` | Buildish `main` branch raw URL | Changes the remote source for unsafe development installers. This can redirect blind-trust execution. | Development-only unsafe escape hatch; not for CI, automation, or secrets. *(documented)* |
 | Checked-in `bootstrap-install.*` placeholders | Placeholder URL/manifest-digest/key material with hard fail | Repository templates intentionally fail closed until release rendering substitutes immutable URLs, the exact manifest digest, and signing trust material. | Template copies are not intended for direct execution. *(documented)* |
 | Release-rendered `bootstrap-install.*` | Not yet operationally published in this repository copy | Establishes verified remote installer delivery if rendered with pinned release URL, exact signed-manifest digest, and signing key material. | Planned/hardened path; publication is remaining release work. *(documented)* |
@@ -245,10 +255,9 @@ Size, shape, and rate assumptions:
 
 - Runtime metadata files are limited to 65,536 bytes. *(documented)*
 - Runtime wrapper JAR files are limited to 10 MiB. *(documented)*
-- POSIX bootstrap payload files are limited to 262,144 bytes each. *(documented)*
-- POSIX bootstrap metadata/signature files are limited to 65,536 bytes each. *(documented)*
-- PowerShell helper network operations use a configurable timeout with 60 seconds default. *(documented)*
-- POSIX helper `curl` downloads are size-limited but do not appear to configure an explicit network timeout. *(inferred)*
+- Bootstrap payload files are limited to 262,144 bytes each. *(documented)*
+- Bootstrap metadata/signature files are limited to 65,536 bytes each. *(documented)*
+- POSIX and PowerShell runtime-helper downloads use a configurable timeout with a 60-second default. *(documented)*
 - Request rate limiting is not provided; callers control how often helpers/installers run. *(inferred)*
 
 ## 7 Adversary Model
@@ -419,36 +428,32 @@ Revise this model when any of these occur:
 | `KNOWN-NON-FINDING` | Matches a documented recurring false positive. | §11a |
 | `MODEL-GAP` | Cannot be cleanly routed to any disposition above. The model must be revised. | §12 |
 
-## 14 Open Questions For Maintainers
+## 14 Ratified Maintainer Decisions
 
-Wave 1: ratification blockers
-
-- Should this `docs/threat-model.md` page be the canonical threat model, or should the canonical copy live in `site/pages/` with this file linking to it? Proposed answer: `docs/threat-model.md` is canonical, and site content may summarize/link to it. Lands in §1 and §12. *(inferred)*
-- Is the version-binding statement correct for future releases? Proposed answer: yes, each release should carry the threat model version current at that release. Lands in §1. *(inferred)*
-- Should release-rendered `bootstrap-install.*` be treated as in-scope security functionality once published? Proposed answer: yes, but checked-in templates remain fail-closed placeholders until rendering. Lands in §2, §5a, §8, and §12. *(inferred)*
-- Is compromise of the release-signing key fully out of scope? Proposed answer:
-  yes; release-key operations are a project release-management responsibility
-  outside this helper's enforceable layer. Lands in §3, §7, and §9. *(inferred)*
-- Should POSIX helper/bootstrap claim timeout-bounded downloads? Implemented answer: yes; both use a 60-second default and accept only positive-integer overrides. Lands in §6 and §8. *(documented)*
-
-Wave 2: environment and resource assumptions
-
-- Are concurrent helper or installer executions in the same checkout unsupported? Proposed answer: yes; temporary-file moves reduce partial-write risk, but no cross-process locking guarantee is made. Lands in §5 and §9. *(inferred)*
-- Should the model explicitly trust host tools (`gpg`, shell, PowerShell, checksum tools, JVM, OS), or are any of those validated enough to claim protection against compromised tools? Proposed answer: host tools are trusted dependencies. Lands in §5 and §7. *(inferred)*
-- Should resource DoS triage use only the documented byte limits/timeouts, or should there be broader CPU/memory complexity guarantees? Proposed answer: only documented thresholds are claimed. Lands in §8 and §9. *(inferred)*
-- Is the no-surprise side-effect inventory complete? Proposed answer: the project does not intentionally open listening sockets, install persistent signal handlers, mutate global locale/FPU state, or write outside the target project and temp directories. Lands in §5. *(inferred)*
-- Are tests and generated/local `build/` outputs correctly out of product security scope? Proposed answer: yes, they are validation/support artifacts, not end-user runtime surfaces. Lands in §2 and §3. *(inferred)*
-
-Wave 3: triage and publication details
-
-- Should `VALID-HARDENING` reports be accepted through private security reporting or ordinary issue tracking? Proposed answer: private reporting is acceptable when the reporter believed it was security-impacting; CVE handling remains maintainer discretion. Lands in §13. *(inferred)*
-- Should `unsafe-dev-install.*` findings ever be `VALID`? Proposed answer: only if the acknowledgement/CI guardrail behavior is bypassed relative to its documented unsafe contract; unverified download itself is by design. Lands in §8, §9, §11a, and §13. *(inferred)*
-- Should CI/release workflows be modeled more deeply as supply-chain surfaces? Proposed answer: only partially in this repository-level model; detailed release-process threat modeling belongs to release tooling if that tooling becomes productized. Lands in §2, §3, and §12. *(inferred)*
-- Should a machine-readable companion (`threat-model.yaml`) be added now? Proposed answer: defer until maintainers ratify this prose model and recurring false positives stabilize. Lands in §15. *(inferred)*
+- `docs/threat-model.md` is canonical. Site pages and `SECURITY-ASSESSMENT.md` may summarize it but
+  must identify themselves as subordinate material. *(maintainer)*
+- Each release carries the model current for that release. *(maintainer)*
+- Release-rendered `bootstrap-install.*` is in-scope security functionality once published;
+  checked-in templates remain fail-closed placeholders until rendering. *(maintainer)*
+- Release-signing-key operations are a release-management responsibility outside the protection
+  this helper can enforce. Compromise of the pinned key remains out of scope. *(maintainer)*
+- POSIX helper and bootstrap downloads claim only their documented byte and timeout bounds; no
+  broader CPU, memory, rate, reachability, or performance guarantee is made. *(maintainer)*
+- Concurrent helper or installer executions in one checkout are unsupported. Atomic moves reduce
+  partial-write risk but do not provide cross-process locking. *(maintainer)*
+- Host tools and runtimes are trusted dependencies. Tests and generated/local build outputs are
+  validation artifacts, not independently secured product surfaces. *(maintainer)*
+- A report believed to be security-impacting may be reported privately even if triage later assigns
+  `VALID-HARDENING`; advisory and CVE decisions remain maintainer decisions. *(maintainer)*
+- An `unsafe-dev-install.*` report is `VALID` only when it bypasses a documented guardrail; its
+  unverified download is otherwise explicitly disclaimed behavior. *(maintainer)*
+- CI and release workflows are only partially modeled here. Detailed release-process modeling
+  belongs to the release tooling; that deferred work remains open. *(maintainer)*
+- A machine-readable companion is deferred until recurring model changes justify its maintenance
+  cost. *(maintainer)*
 
 ## 15 Optional Machine-Readable Companion
 
-No machine-readable companion is included in this draft. Once maintainers ratify the prose model,
-consider adding `threat-model.yaml` with entry-point trust assumptions, component scope,
-security-relevant variants, claimed/disclaimed properties, known non-findings, and triage
-dispositions derived from this document. *(inferred)*
+No machine-readable companion is currently maintained. If recurring model changes justify one,
+derive it from this canonical prose model rather than creating a second independent authority.
+*(maintainer)*
