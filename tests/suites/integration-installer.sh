@@ -446,14 +446,50 @@ exercise_unsafe_dev_installer_success() {
   assert_helper_files "$project_dir"
 }
 
-# Exercise the end-to-end POSIX installer flow, then upgrade the wrapper to a
-# target version and verify the helper still patches and recovers correctly.
+# Choose a known-good target that differs from both the installed version and a
+# version reserved by another fixture. A no-op Wrapper task cannot exercise the
+# version-change logic, and reusing the replay version would collapse that
+# fixture's cross-version invariant later in the suite.
+select_distinct_wrapper_target_version() {
+  local initial_version=$1
+  local preferred_version=$2
+  local fallback_version=$3
+  local reserved_version=$4
+
+  if [ "$preferred_version" != "$initial_version" ] && [ "$preferred_version" != "$reserved_version" ]; then
+    printf '%s\n' "$preferred_version"
+  elif [ "$fallback_version" != "$initial_version" ] && [ "$fallback_version" != "$reserved_version" ]; then
+    printf '%s\n' "$fallback_version"
+  else
+    fail "wrapper update test requires a target distinct from initial Gradle '$initial_version' and reserved Gradle '$reserved_version'."
+  fi
+}
+
+# Lock in the preferred, installed-version collision, and reserved-version
+# collision branches without downloading distributions.
+exercise_wrapper_target_version_selection() {
+  local selected_version
+  selected_version=$(select_distinct_wrapper_target_version 9.4.1 9.6.1 9.3.0 8.14)
+  [ "$selected_version" = 9.6.1 ] ||
+    fail "wrapper update target selection did not keep the usable preferred version (selected '$selected_version')."
+  selected_version=$(select_distinct_wrapper_target_version 9.6.1 9.6.1 9.4.1 8.14)
+  [ "$selected_version" = 9.4.1 ] ||
+    fail "wrapper update target selection did not avoid a no-op version change (selected '$selected_version')."
+  selected_version=$(select_distinct_wrapper_target_version 9.4.1 8.14 9.6.1 8.14)
+  [ "$selected_version" = 9.6.1 ] ||
+    fail "wrapper update target selection reused the reserved replay version (selected '$selected_version')."
+}
+
+# Exercise the end-to-end POSIX installer flow, then change or regenerate the
+# wrapper at the selected target version and verify the helper still works.
 exercise_wrapper_update_to_version() {
   project_dir=$1
   bootstrap_gradle_version=$2
-  target_version=$3
+  preferred_target_version=$3
+  fallback_target_version=${4:-}
+  reserved_target_version=${5:-}
 
-  log "starting wrapper exercise for target Gradle '$target_version' in '$project_dir'"
+  log "starting wrapper exercise in '$project_dir'"
   gradle_init_fixture "$project_dir" "$bootstrap_gradle_version"
   run_posix_installer_capture "$project_dir"
   assert_last_command_succeeded 'POSIX installer failed during the wrapper exercise.'
@@ -467,26 +503,45 @@ exercise_wrapper_update_to_version() {
   run_wrapper "$project_dir" help
   initial_version=$(extract_gradle_version "$project_dir")
   [ -n "$initial_version" ] || fail 'unable to extract the initial Gradle version after install.sh.'
+  if [ -n "$fallback_target_version" ]; then
+    target_version=$(select_distinct_wrapper_target_version \
+      "$initial_version" \
+      "$preferred_target_version" \
+      "$fallback_target_version" \
+      "$reserved_target_version")
+  else
+    target_version=$preferred_target_version
+  fi
   assert_metadata_for_version "$project_dir" "$initial_version"
   properties_path=$project_dir/gradle/wrapper/gradle-wrapper.properties
   previous_wrapper_pin=$(sed -n 's/^buildishWrapperJarSha256Sum=//p' "$properties_path")
 
-  log "upgrading wrapper in '$project_dir' from '$initial_version' to '$target_version'"
+  if [ "$target_version" = "$initial_version" ]; then
+    log "regenerating wrapper in '$project_dir' at Gradle '$target_version'"
+  else
+    log "changing wrapper in '$project_dir' from '$initial_version' to '$target_version'"
+  fi
   run_wrapper_capture "$project_dir" wrapper --gradle-version "$target_version" --distribution-type bin
-  assert_last_command_succeeded 'Gradle wrapper update failed during the wrapper exercise.'
+  assert_last_command_succeeded 'Gradle Wrapper task failed during the wrapper exercise.'
   assert_init_distribution_sha_warning_output 'Gradle init script'
-  assert_last_output_contains 'was only preserved; it was not recalculated' 'Gradle init script did not explain that a version change requires a reviewed wrapper-JAR pin update.'
+  if [ "$target_version" = "$initial_version" ]; then
+    assert_last_output_not_contains 'was only preserved; it was not recalculated' 'Gradle init script emitted the version-change pin warning during a same-version regeneration.'
+  else
+    assert_last_output_contains 'was only preserved; it was not recalculated' 'Gradle init script did not explain that a version change requires a reviewed wrapper-JAR pin update.'
+  fi
   updated_version=$(extract_gradle_version "$project_dir")
   [ "$updated_version" = "$target_version" ] || fail "expected updated Gradle version '$target_version' but found '$updated_version'."
   preserved_wrapper_pin=$(sed -n 's/^buildishWrapperJarSha256Sum=//p' "$properties_path")
   [ "$preserved_wrapper_pin" = "$previous_wrapper_pin" ] || fail 'Gradle init script did not preserve the reviewed wrapper-JAR pin across Wrapper task property regeneration.'
-  updated_wrapper_pin=$(fetch_gradle_wrapper_checksum "$updated_version")
-  set_wrapper_property "$properties_path" buildishWrapperJarSha256Sum "$updated_wrapper_pin"
-  run_wrapper_capture "$project_dir" wrapper --gradle-version "$target_version" --distribution-type bin
-  assert_last_command_succeeded 'Second Gradle wrapper update pass failed after installing the reviewed wrapper-JAR pin.'
+  if [ "$target_version" != "$initial_version" ]; then
+    updated_wrapper_pin=$(fetch_gradle_wrapper_checksum "$updated_version")
+    set_wrapper_property "$properties_path" buildishWrapperJarSha256Sum "$updated_wrapper_pin"
+    run_wrapper_capture "$project_dir" wrapper --gradle-version "$target_version" --distribution-type bin
+    assert_last_command_succeeded 'Second Gradle Wrapper task failed after installing the reviewed wrapper-JAR pin.'
+  fi
   assert_launcher_patches "$project_dir"
 
-  log "verifying upgraded helper for '$project_dir' at Gradle '$updated_version'"
+  log "verifying helper after the Wrapper task for '$project_dir' at Gradle '$updated_version'"
   run_wrapper "$project_dir" help
   assert_metadata_for_version "$project_dir" "$updated_version"
 }
@@ -523,7 +578,13 @@ run_installer_suite() {
   log "starting installer suite (test_root='$test_root')"
   exercise_standalone_installation_documentation_contract
   exercise_output_normalization_contract
-  exercise_wrapper_update_to_version "$posix_project_dir" '' "$UPDATED_GRADLE_VERSION"
+  exercise_wrapper_target_version_selection
+  exercise_wrapper_update_to_version \
+    "$posix_project_dir" \
+    '' \
+    "$UPDATED_GRADLE_VERSION" \
+    "$WRAPPER_UPDATE_FALLBACK_VERSION" \
+    "$TWO_SEGMENT_GRADLE_VERSION"
   run_powershell_installer_flow "$powershell_project_dir"
   exercise_installer_missing_properties_failure "$test_root/posix-installer-missing-properties" posix
   exercise_installer_missing_properties_failure "$test_root/powershell-installer-missing-properties" powershell

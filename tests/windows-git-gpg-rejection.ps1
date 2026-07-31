@@ -47,6 +47,7 @@ function Get-BuildishGradleUserHome {
 $testRoot = Join-Path -Path $BuildDirectory -ChildPath "windows-git-gpg-rejection.$([System.Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $projectDirectory = Join-Path -Path $testRoot -ChildPath 'windows launcher git gpg rejection with spaces'
 $wrapperJarPath = Join-Path -Path $projectDirectory -ChildPath 'gradle\wrapper\gradle-wrapper.jar'
+$wrapperPropertiesPath = Join-Path -Path $projectDirectory -ChildPath 'gradle\wrapper\gradle-wrapper.properties'
 
 try {
   New-Item -ItemType Directory -Path $BuildDirectory, $projectDirectory -Force | Out-Null
@@ -71,6 +72,22 @@ try {
     & gradle -p $projectDirectory init --dsl groovy --type java-library --use-defaults --no-daemon
     if ($LASTEXITCODE -ne 0) {
       throw "gradle init failed with exit code $LASTEXITCODE."
+    }
+
+    # The installer requires the reviewed project-owned Wrapper JAR pin before
+    # mutation. Establish it from the just-generated local fixture so this test
+    # reaches the Git-for-Windows GPG rejection boundary it owns.
+    $wrapperJarSha256 = (Get-FileHash -LiteralPath $wrapperJarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $propertiesText = [System.IO.File]::ReadAllText($wrapperPropertiesPath)
+    $separator = if ($propertiesText.EndsWith("`n")) { '' } else { "`n" }
+    [System.IO.File]::AppendAllText(
+      $wrapperPropertiesPath,
+      "${separator}buildishWrapperJarSha256Sum=$wrapperJarSha256`n",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+    $wrapperPinLines = @(Select-String -LiteralPath $wrapperPropertiesPath -CaseSensitive -Pattern '^buildishWrapperJarSha256Sum=[0-9a-f]{64}$')
+    if ($wrapperPinLines.Count -ne 1 -or $wrapperPinLines[0].Line -ne "buildishWrapperJarSha256Sum=$wrapperJarSha256") {
+      throw 'Unable to establish exactly one wrapper-JAR pin for the rejection-path fixture.'
     }
 
     & pwsh -NoLogo -NoProfile -File (Join-Path -Path $ToolDirectory -ChildPath 'install.ps1') --trusted-source-dir $ToolDirectory $projectDirectory
