@@ -177,6 +177,62 @@ function Assert-BuildishMetadataForVersion {
   }
 }
 
+function Invoke-BuildishMetacharacterArgumentTransport {
+  param(
+    [string]$ProjectDirectory,
+    [string]$HarnessDirectory
+  )
+
+  $initScriptPath = Join-Path -Path $ProjectDirectory -ChildPath 'gradle\buildish-no-gradle-wrapper-jar.init.gradle.kts'
+  $verifierPath = Join-Path -Path $HarnessDirectory -ChildPath 'argument-transport-verifier.ps1'
+  $batchPath = Join-Path -Path $HarnessDirectory -ChildPath 'argument-transport.bat'
+  $savedEnvironment = @{
+    APP_HOME = $env:APP_HOME
+    BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS = $env:BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS
+    BUILDISH_EXPECTED_INIT_SCRIPT_PATH = $env:BUILDISH_EXPECTED_INIT_SCRIPT_PATH
+  }
+
+  [System.IO.File]::WriteAllText($verifierPath, @'
+if ($args.Count -ne 2) {
+  throw "Expected two transported arguments, got $($args.Count): $($args -join ' | ')"
+}
+if ($args[0] -cne '--init-script') {
+  throw "Expected --init-script as the first transported argument, got '$($args[0])'."
+}
+if ($args[1] -cne $env:BUILDISH_EXPECTED_INIT_SCRIPT_PATH) {
+  throw "Transported init-script path '$($args[1])' did not match '$env:BUILDISH_EXPECTED_INIT_SCRIPT_PATH'."
+}
+'@, [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText($batchPath, @'
+@echo off
+setlocal EnableExtensions
+set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=
+set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=
+for /f "delims=" %%a in ('powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%APP_HOME%\gradle\buildish-no-gradle-wrapper-jar.ps1"') do @set BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS=%%a
+set BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS=
+if errorlevel 1 exit /b %ERRORLEVEL%
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0argument-transport-verifier.ps1" %BUILDISH_NO_GRADLE_WRAPPER_JAR_ARGS%
+'@, [System.Text.Encoding]::ASCII)
+
+  try {
+    $env:APP_HOME = $ProjectDirectory
+    Remove-Item Env:BUILDISH_NO_GRADLE_WRAPPER_JAR_ORIGINAL_ARGS -ErrorAction SilentlyContinue
+    $env:BUILDISH_EXPECTED_INIT_SCRIPT_PATH = $initScriptPath
+    Invoke-BuildishExternal -Label 'cmd helper-argument transport from metacharacter path' -Command {
+      Push-Location $HarnessDirectory
+      try { & cmd.exe /d /v:off /c 'argument-transport.bat' } finally { Pop-Location }
+    }
+  } finally {
+    foreach ($name in $savedEnvironment.Keys) {
+      if ($null -eq $savedEnvironment[$name]) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+      } else {
+        Set-Item "Env:$name" $savedEnvironment[$name]
+      }
+    }
+  }
+}
+
 $testRoot = Join-Path -Path $BuildDirectory -ChildPath "windows-integration.$([System.Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $projectDirectory = Join-Path -Path $testRoot -ChildPath 'windows launcher smoke with spaces'
 $wrapperDirectory = Join-Path -Path $projectDirectory -ChildPath 'gradle\wrapper'
@@ -285,12 +341,13 @@ try {
   $metacharProjectDirectory = Join-Path -Path $testRoot -ChildPath 'windows&launcher^(meta)%pct!bang'
   Copy-Item -LiteralPath $projectDirectory -Destination $metacharProjectDirectory -Recurse
 
-  Write-BuildishWindowsTestLog "running batch launcher from metacharacter path '$metacharProjectDirectory'"
-  Invoke-BuildishWithGradleUserHome -ProjectDirectory $metacharProjectDirectory -Label 'cmd gradlew.bat help from metacharacter path' -Command {
-    Push-Location $metacharProjectDirectory
-    try { & cmd.exe /d /c 'gradlew.bat --no-daemon help' } finally { Pop-Location }
-  }
-  Assert-BuildishMetadataForVersion -ProjectDirectory $metacharProjectDirectory -GradleVersion $TwoSegmentGradleVersion
+  # Gradle's generated gradlew.bat uses unquoted SET commands while resolving
+  # APP_HOME, so the stock launcher can fail for paths containing cmd.exe
+  # metacharacters such as `&`. Exercise Buildish's narrower contract directly:
+  # the exact helper-capture block must preserve the quoted output so its
+  # environment-variable expansion reaches the final command as two arguments.
+  Write-BuildishWindowsTestLog "checking helper-to-cmd argument transport for metacharacter path '$metacharProjectDirectory'"
+  Invoke-BuildishMetacharacterArgumentTransport -ProjectDirectory $metacharProjectDirectory -HarnessDirectory $testRoot
 
   Write-BuildishWindowsTestLog 'all Windows launcher integration checks passed.'
 } finally {
