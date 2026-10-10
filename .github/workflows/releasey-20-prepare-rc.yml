@@ -56,7 +56,7 @@ jobs:
           path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           prune-cache: true
       - name: Install Python 3.13 for uv-managed commands
@@ -94,7 +94,7 @@ jobs:
           path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           prune-cache: true
       - name: Install Python 3.13 for uv-managed commands
@@ -139,7 +139,7 @@ jobs:
           path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           prune-cache: true
       - name: Install Python 3.13 for uv-managed commands
@@ -166,7 +166,7 @@ jobs:
           path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           prune-cache: true
       - name: Install Python 3.13 for uv-managed commands
@@ -211,7 +211,7 @@ jobs:
           path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           prune-cache: true
       - name: Install Python 3.13 for uv-managed commands
@@ -252,7 +252,7 @@ jobs:
           path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           prune-cache: true
       - name: Install Python 3.13 for uv-managed commands
@@ -294,7 +294,7 @@ jobs:
           path: ${{ env.BUILDISH_RELEASE_TOOLING_CHECKOUT_PATH }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           prune-cache: true
       - name: Install Python 3.13 for uv-managed commands
