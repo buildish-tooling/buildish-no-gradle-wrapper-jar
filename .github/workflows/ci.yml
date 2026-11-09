@@ -33,7 +33,7 @@ concurrency:
 jobs:
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,7 +91,7 @@ jobs:
     # Temporarily disabled because GitHub Advanced Security is unavailable.
     if: false
     # if: github.repository_owner == 'buildish-tooling'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
@@ -113,7 +113,7 @@ jobs:
 
   zizmor:
     name: zizmor
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
@@ -136,7 +136,7 @@ jobs:
       - windows-check
       - codeql
       - zizmor
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Assert required jobs succeeded and CodeQL was acceptable
         env:
@@ -180,7 +180,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main'
       && false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions: {}
     steps:
       - name: Dispatch aggregate site publishing
