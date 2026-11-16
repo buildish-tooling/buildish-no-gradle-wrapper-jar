@@ -39,7 +39,7 @@ env:
 
 jobs:
   verify-source-ref-checks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       checks: read
       contents: read
@@ -79,7 +79,7 @@ jobs:
 
   resolve-state:
     needs: verify-source-ref-checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       rc_tag: ${{ steps.prepare-rc.outputs.rc_tag }}
     steps:
@@ -126,7 +126,7 @@ jobs:
 
   prepare-rc-destination:
     needs: resolve-state
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: draft-release-secrets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -152,7 +152,7 @@ jobs:
     needs:
       - resolve-state
       - prepare-rc-destination
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: draft-release-secrets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,7 +196,7 @@ jobs:
     needs:
       - resolve-state
       - build-source-rc
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
@@ -237,7 +237,7 @@ jobs:
     needs:
       - resolve-state
       - create-rc-tag
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
@@ -278,7 +278,7 @@ jobs:
     needs:
       - resolve-state
       - sync-draft-github-release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     environment: draft-release-secrets
